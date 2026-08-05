@@ -346,7 +346,7 @@ def test_cell_size_floor_prevents_tiny_cells():
     """Zooming right in must not produce hundreds of tiny polygons."""
     from getmehome.safety.hexgrid import MAX_CELLS, SIZE_LADDER
 
-    assert min(SIZE_LADDER) >= 110.0
+    assert min(SIZE_LADDER) >= 165.0
 
     # A few blocks across, the tightest a user is likely to zoom.
     radius = choose_radius(38.9000, -77.0350, 38.9060, -77.0270)
@@ -358,3 +358,30 @@ def test_cell_size_floor_prevents_tiny_cells():
     area = abs(float(x1) - float(x0)) * abs(float(y1) - float(y0))
     mid = choose_radius(38.890, -77.060, 38.920, -77.010)
     assert area / (2.598 * mid * mid) <= MAX_CELLS
+
+
+def test_offense_codes_become_readable_english():
+    """MPD codes are database values; they must never reach the screen."""
+    from getmehome.safety.hexgrid import readable_offense
+
+    assert readable_offense("THEFT/OTHER") == "Theft"
+    assert readable_offense("THEFT F/AUTO") == "Theft from a vehicle"
+    assert readable_offense("MOTOR VEHICLE THEFT") == "Vehicle theft"
+    assert readable_offense("ASSAULT W/DANGEROUS WEAPON") == "Assault with a weapon"
+    assert readable_offense("SEX ABUSE") == "Sexual offense"
+
+    # Nothing shouty or slash-laden survives, including for unmapped codes.
+    for code in ("THEFT/OTHER", "THEFT F/AUTO", "SOME NEW/CODE"):
+        rendered = readable_offense(code)
+        assert rendered != rendered.upper() or len(rendered) < 4
+        assert "  " not in rendered
+
+
+def test_breakdown_carries_a_display_name():
+    index = CrimeIndex.from_incidents(
+        incidents_at(CENTER_LAT, CENTER_LON, 5, offense="THEFT F/AUTO"), now=NOW
+    )
+    cells, _ = index.cells(38.895, -77.040, 38.915, -77.020, radius_m=400.0)
+    entry = cells[0].by_offense[0]
+    assert entry.offense == "THEFT F/AUTO"
+    assert entry.display == "Theft from a vehicle"

@@ -165,14 +165,18 @@ struct RouteMapView: View {
     @MapContentBuilder
     private var crimeGrid: some MapContent {
         ForEach(planner.crimeCells) { cell in
-            MapPolygon(coordinates: cell.polygon)
-                .foregroundStyle(Theme.crimeCellColor(cell.intensity))
-                .stroke(
-                    planner.selectedCell?.id == cell.id
-                        ? Color.primary
-                        : Theme.crimeCellColor(cell.intensity).opacity(0.9),
-                    lineWidth: planner.selectedCell?.id == cell.id ? 2.5 : 0.5
-                )
+            // Only the selected cell is stroked. Every stroked polygon costs
+            // a second draw pass, and across a couple of hundred cells that
+            // outline was the single biggest contributor to the stutter — the
+            // fill alone reads perfectly well as a grid.
+            if planner.selectedCell?.id == cell.id {
+                MapPolygon(coordinates: cell.polygon)
+                    .foregroundStyle(Theme.crimeCellColor(cell.intensity))
+                    .stroke(Color.primary, lineWidth: 2.5)
+            } else {
+                MapPolygon(coordinates: cell.polygon)
+                    .foregroundStyle(Theme.crimeCellColor(cell.intensity))
+            }
         }
     }
 
@@ -310,7 +314,7 @@ struct CrimeCellSheet: View {
             HStack(spacing: 22) {
                 stat(
                     "\(cell.seriousCount)",
-                    "Violent or sexual",
+                    "Violent crimes",
                     tint: cell.seriousCount > 0 ? Theme.seriousCrimeTint : .primary
                 )
                 stat("\(Int(cell.nightShare * 100))%", "At night")
@@ -339,7 +343,7 @@ struct CrimeCellSheet: View {
                                 Circle()
                                     .fill(Theme.categoryTint(entry.category))
                                     .frame(width: 7, height: 7)
-                                Text(entry.displayName)
+                                Text(entry.label)
                                     .font(.subheadline)
                                     .lineLimit(1)
                                 Spacer()
@@ -368,7 +372,7 @@ struct CrimeCellSheet: View {
                 "Reported incidents from MPD over the last three years, "
                     + "weighted by how much each offence bears on the safety "
                     + "of someone walking past. Reporting varies by "
-                    + "neighbourhood — this is not a measure of the people "
+                    + "neighborhood — this is not a measure of the people "
                     + "who live here."
             )
             .font(.footnote)

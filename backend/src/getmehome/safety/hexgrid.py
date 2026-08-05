@@ -33,15 +33,16 @@ from .crime_model import NIGHT_SHIFTS, incident_weight
 # Cell circumradius options in metres. Chosen so each step is roughly 1.5x the
 # last — enough of a jump to be visible, not so much that a zoom skips a level.
 #
-# The floor is 110m rather than something finer. Smaller cells look appealing
-# zoomed in, but each one is a separate filled overlay on the map and the
-# render cost is what makes the grid stutter — the same mistake, at a smaller
-# scale, as the per-street overlay this replaced.
-SIZE_LADDER = (110.0, 165.0, 250.0, 375.0, 560.0, 850.0, 1300.0, 2000.0)
+# The floor is 165m. Smaller cells look appealing zoomed in, but each one is a
+# separate filled overlay on the map and render cost is what makes the grid
+# stutter — the same mistake, at a smaller scale, as the per-street overlay
+# this replaced. 110m was still too fine in practice.
+SIZE_LADDER = (165.0, 250.0, 375.0, 560.0, 850.0, 1300.0, 2000.0)
 
 # Hard ceiling on cells per response. Filled map polygons are expensive enough
-# that this, not payload size, is the binding constraint.
-MAX_CELLS = 320
+# that this, not payload size, is the binding constraint. Measured against a
+# real DC build rather than guessed: 320 still stuttered.
+MAX_CELLS = 180
 
 SQRT3 = math.sqrt(3.0)
 
@@ -126,11 +127,27 @@ def hex_vertices(
     return points
 
 
+def readable_offense(code: str, cfg: CrimeConfig = CRIME) -> str:
+    """Turn an MPD offence code into something a person would say.
+
+    Falls back to a tidied version of the code rather than showing it raw, so
+    a new offence type MPD starts publishing degrades to "Theft From Boat"
+    rather than "THEFT F/BOAT".
+    """
+    known = cfg.display_name.get(code)
+    if known:
+        return known
+    cleaned = code.replace("/", " / ").replace("  ", " ").strip()
+    return " ".join(word.capitalize() for word in cleaned.split()) or "Other"
+
+
 @dataclass
 class OffenseBreakdown:
     """One offence type's contribution to a cell."""
 
     offense: str
+    # Human-readable form of `offense`, for display.
+    display: str
     count: int
     category: str
     # Share of the cell's weighted intensity, 0-1. This is what makes the list
@@ -321,6 +338,7 @@ class CrimeIndex:
             breakdown = [
                 OffenseBreakdown(
                     offense=self.offenses[oid],
+                    display=readable_offense(self.offenses[oid], self.cfg),
                     count=int(counts[oid]),
                     category=self.categories[oid],
                     share=round(contribution[oid] / total_weight, 4),

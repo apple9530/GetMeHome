@@ -345,6 +345,7 @@ def crime_grid(
                 byOffense=[
                     OffenseCount(
                         offense=b.offense,
+                        displayName=b.display,
                         count=b.count,
                         category=b.category,
                         share=b.share,

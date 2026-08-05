@@ -22,7 +22,7 @@ Worth being straight about this before you invest time in it.
 
 | Part | State |
 |---|---|
-| Backend routing, safety model, transit, crime grid, API | Written and covered by 82 passing tests |
+| Backend routing, safety model, transit, crime grid, API | Written and covered by 84 passing tests |
 | `RouteTracker` navigation maths | Algorithm validated independently against hand-computed cases |
 | iOS app | Compiles and launches; UI beyond that not exercised here |
 | The DC data build (`make graph`) | Streetlight + crime ingestion fixed against the real feeds |
@@ -196,11 +196,12 @@ Two details that matter for how it feels:
 
 * **The grid is anchored to the projection origin**, not to the viewport, so
   cells stay put while you pan rather than reflowing under your finger.
-* **Cell size comes from a fixed ladder** and adapts to zoom, with a 110 m
-  floor and a 320-cell ceiling. Both limits exist because each cell is a
+* **Cell size comes from a fixed ladder** and adapts to zoom, with a 165 m
+  floor and a 180-cell ceiling. Both limits exist because each cell is a
   separate filled map overlay and render cost, not payload size, is what
   binds — the same mistake the per-street overlay this replaced made at a
-  larger scale.
+  larger scale. Only the selected cell is stroked, for the same reason: an
+  outline is a second draw pass per polygon.
 
 Cell colour is a sequential single-hue ramp, not a rainbow: intensity is an
 ordered quantity, and a rainbow implies category boundaries that do not exist.
@@ -326,7 +327,7 @@ backend/
     routing/             A*, alternatives, RAPTOR, multimodal
     nav/                 turn-by-turn instructions
     api/                 FastAPI app
-  tests/                 82 tests, no data build required
+  tests/                 84 tests, no data build required
 ios/
   project.yml            XcodeGen spec
   GetMeHome/

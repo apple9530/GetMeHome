@@ -126,7 +126,10 @@ class CameraResponse(BaseModel):
 
 
 class OffenseCount(BaseModel):
+    # The raw MPD code, kept so clients can key on something stable.
     offense: str
+    # What to actually show a person.
+    displayName: str = ""
     count: int
     # "violent" | "sexual" | "property" | "other"
     category: str = "other"

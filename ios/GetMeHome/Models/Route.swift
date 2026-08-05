@@ -199,7 +199,12 @@ struct CameraResponse: Codable {
 }
 
 struct OffenseCount: Codable, Hashable {
+    /// Raw MPD code, e.g. "THEFT F/AUTO".
     let offense: String
+    /// Readable form, supplied by the server so the wording lives in one
+    /// place. MPD's codes are database values and no amount of automatic
+    /// title-casing turns "THEFT F/AUTO" into English.
+    let displayName: String
     let count: Int
     /// "violent" | "sexual" | "property" | "other"
     let category: String
@@ -208,18 +213,8 @@ struct OffenseCount: Codable, Hashable {
 
     var isSerious: Bool { category == "violent" || category == "sexual" }
 
-    /// MPD writes offences in shouting caps; this is the readable form.
-    var displayName: String {
-        offense
-            .split(separator: " ")
-            .map { word -> String in
-                let lower = word.lowercased()
-                // Keep the abbreviations MPD uses intact.
-                if lower.contains("/") || lower.count <= 1 { return String(word) }
-                return lower.prefix(1).uppercased() + lower.dropFirst()
-            }
-            .joined(separator: " ")
-    }
+    /// Falls back to the raw code if an older server omits the readable form.
+    var label: String { displayName.isEmpty ? offense.capitalized : displayName }
 }
 
 /// One hexagon of aggregated incidents.

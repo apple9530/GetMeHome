@@ -166,6 +166,26 @@ class CrimeConfig:
     )
     default_severity: float = 0.15
 
+    # Readable names for MPD's offence codes.
+    #
+    # The raw values are database codes — "THEFT F/AUTO", "ASSAULT
+    # W/DANGEROUS WEAPON" — and no amount of automatic title-casing turns
+    # those into English. Mapped here rather than in the app so the same
+    # wording is used everywhere and one file holds the vocabulary.
+    display_name: dict[str, str] = field(
+        default_factory=lambda: {
+            "HOMICIDE": "Homicide",
+            "SEX ABUSE": "Sexual offense",
+            "ASSAULT W/DANGEROUS WEAPON": "Assault with a weapon",
+            "ROBBERY": "Robbery",
+            "ARSON": "Arson",
+            "BURGLARY": "Burglary",
+            "MOTOR VEHICLE THEFT": "Vehicle theft",
+            "THEFT F/AUTO": "Theft from a vehicle",
+            "THEFT/OTHER": "Theft",
+        }
+    )
+
     # Broad grouping, used to label and order what the map's crime grid shows.
     # Keeping this separate from the numeric weight means the UI can say
     # "3 violent" without re-deriving that from a severity threshold.
