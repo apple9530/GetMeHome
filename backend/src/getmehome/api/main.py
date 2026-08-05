@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import httpx
-import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,27 +15,29 @@ from ..daylight import is_night as compute_is_night
 from ..geo import simplify_polyline
 from ..routing.multimodal import Itinerary, plan
 from ..safety.cameras import cameras_in_bbox
+from ..safety.hexgrid import hex_vertices
 from .schemas import (
     CameraModel,
     CameraResponse,
+    CrimeCellModel,
+    CrimeGridResponse,
     GeocodeResponse,
     GeocodeResult,
     ItineraryModel,
     LegModel,
     MetaResponse,
+    OffenseCount,
     RouteRequest,
     RouteResponse,
-    SafetyOverlayResponse,
-    SegmentSafetyModel,
     StepModel,
 )
 from .state import get_state, load_state
 
 log = logging.getLogger("getmehome.api")
 
-# Overlay responses are capped so a zoomed-out request cannot return the whole
-# city and stall the client.
-MAX_OVERLAY_SEGMENTS = 4000
+# Camera responses are capped so a zoomed-out request cannot return the whole
+# city and stall the client. The crime grid needs no such cap: it adapts its
+# cell size to the viewport instead.
 MAX_OVERLAY_CAMERAS = 1500
 
 
@@ -73,6 +74,15 @@ def _seconds_to_clock(seconds: float) -> str:
     """Seconds-since-midnight to HH:MM, wrapping past midnight."""
     total = int(seconds) % 86400
     return f"{total // 3600:02d}:{total % 3600 // 60:02d}"
+
+
+def _flatten_pairs(coords: list[tuple[float, float]]) -> list[float]:
+    """(lat, lon) pairs to a flat array, with no simplification."""
+    out: list[float] = []
+    for lat, lon in coords:
+        out.append(round(lat, 6))
+        out.append(round(lon, 6))
+    return out
 
 
 def _flatten(coords: list[tuple[float, float]], tolerance_m: float = 2.0) -> list[float]:
@@ -282,55 +292,56 @@ def cameras(
     )
 
 
-@app.get("/safety/overlay", response_model=SafetyOverlayResponse)
-def safety_overlay(
+@app.get("/crime/grid", response_model=CrimeGridResponse)
+def crime_grid(
     minLat: float = Query(...),
     minLon: float = Query(...),
     maxLat: float = Query(...),
     maxLon: float = Query(...),
-    night: bool | None = Query(None),
-) -> SafetyOverlayResponse:
-    """Per-segment risk in a bounding box, for colouring streets on the map."""
+    nightOnly: bool = Query(False),
+) -> CrimeGridResponse:
+    """Incidents binned into hexagons over a bounding box.
+
+    This replaced a per-street risk overlay that shipped thousands of
+    individual polylines and stalled the client trying to draw them. A few
+    hundred hexagons carry the same information at a fraction of the render
+    cost, and unlike a coloured street they can be tapped for the underlying
+    incident counts.
+    """
     state = _require_state()
-    graph = state.graph
-
-    is_night_now = (
-        night
-        if night is not None
-        else compute_is_night(
-            datetime.now(UTC),
-            (minLat + maxLat) / 2,
-            (minLon + maxLon) / 2,
+    if state.crime is None or state.crime.count == 0:
+        return CrimeGridResponse(
+            cells=[], radius=0.0, totalIncidents=0, nightOnly=nightOnly
         )
+
+    cells, radius = state.crime.cells(
+        minLat, minLon, maxLat, maxLon, night_only=nightOnly
     )
-    risk = graph.segment_risk(is_night_now)
-    crime = graph.seg_crime_night if is_night_now else graph.seg_crime_day
 
-    # Filter by segment start vertex, which is enough for an overlay and far
-    # cheaper than a true geometry intersection.
-    starts = graph.seg_geom_ptr[:-1]
-    lat = graph.seg_geom[starts, 0]
-    lon = graph.seg_geom[starts, 1]
-    mask = (lat >= minLat) & (lat <= maxLat) & (lon >= minLon) & (lon <= maxLon)
-    ids = np.nonzero(mask)[0]
-
-    truncated = len(ids) > MAX_OVERLAY_SEGMENTS
-    if truncated:
-        # Keep the riskiest, since those are what the overlay exists to show.
-        ids = ids[np.argsort(-risk[ids])[:MAX_OVERLAY_SEGMENTS]]
-
-    return SafetyOverlayResponse(
-        segments=[
-            SegmentSafetyModel(
-                polyline=_flatten(graph.segment_coords(int(s)), tolerance_m=6.0),
-                risk=round(float(risk[s]), 3),
-                lit=round(float(graph.seg_lit[s]), 3),
-                crime=round(float(crime[s]), 3),
+    return CrimeGridResponse(
+        cells=[
+            CrimeCellModel(
+                # Position-derived id: stable across requests at the same zoom,
+                # so the client can keep a selection through a refresh.
+                id=f"{radius:.0f}:{c.center_lat:.5f},{c.center_lon:.5f}",
+                centerLat=round(c.center_lat, 6),
+                centerLon=round(c.center_lon, 6),
+                vertices=_flatten_pairs(
+                    hex_vertices(c.center_lat, c.center_lon, radius)
+                ),
+                total=c.total,
+                intensity=c.intensity,
+                nightShare=round(c.night_share, 3),
+                byOffense=[
+                    OffenseCount(offense=name, count=n) for name, n in c.by_offense
+                ],
+                latest=c.latest.date().isoformat() if c.latest else "",
             )
-            for s in ids
+            for c in cells
         ],
-        isNight=is_night_now,
-        truncated=truncated,
+        radius=round(radius, 1),
+        totalIncidents=sum(c.total for c in cells),
+        nightOnly=nightOnly,
     )
 
 

@@ -198,23 +198,56 @@ struct CameraResponse: Codable {
     let truncated: Bool
 }
 
-struct SafetySegment: Codable, Hashable {
-    let polyline: [Double]
-    let risk: Double
-    let lit: Double
-    let crime: Double
+struct OffenseCount: Codable, Hashable {
+    let offense: String
+    let count: Int
 
-    var coordinates: [CLLocationCoordinate2D] {
-        stride(from: 0, to: polyline.count - 1, by: 2).map {
-            CLLocationCoordinate2D(latitude: polyline[$0], longitude: polyline[$0 + 1])
+    /// MPD writes offences in shouting caps; this is the readable form.
+    var displayName: String {
+        offense
+            .split(separator: " ")
+            .map { word -> String in
+                let lower = word.lowercased()
+                // Keep the abbreviations MPD uses intact.
+                if lower.contains("/") || lower.count <= 1 { return String(word) }
+                return lower.prefix(1).uppercased() + lower.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+}
+
+/// One hexagon of aggregated incidents.
+struct CrimeCell: Codable, Hashable, Identifiable {
+    let id: String
+    let centerLat: Double
+    let centerLon: Double
+    /// The six corners as flat [lat, lon, ...] pairs, computed server-side so
+    /// the drawn cell is exactly the one incidents were binned into.
+    let vertices: [Double]
+    let total: Int
+    /// Severity-weighted intensity in [0, 1], relative to the busiest cell
+    /// currently in view.
+    let intensity: Double
+    let nightShare: Double
+    let byOffense: [OffenseCount]
+    let latest: String
+
+    var center: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon)
+    }
+
+    var polygon: [CLLocationCoordinate2D] {
+        stride(from: 0, to: vertices.count - 1, by: 2).map {
+            CLLocationCoordinate2D(latitude: vertices[$0], longitude: vertices[$0 + 1])
         }
     }
 }
 
-struct SafetyOverlayResponse: Codable {
-    let segments: [SafetySegment]
-    let isNight: Bool
-    let truncated: Bool
+struct CrimeGridResponse: Codable {
+    let cells: [CrimeCell]
+    let radius: Double
+    let totalIncidents: Int
+    let nightOnly: Bool
 }
 
 struct GeocodeResult: Codable, Hashable, Identifiable {

@@ -50,9 +50,16 @@ struct RouteOptionsView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(planner.destination?.name ?? "Route")
-                    .font(.headline)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(planner.origin.displayName)
+                        .lineLimit(1)
+                    Image(systemName: "arrow.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(planner.destinationName)
+                        .lineLimit(1)
+                }
+                .font(.headline)
                 HStack(spacing: 5) {
                     Image(systemName: planner.isNight ? "moon.stars.fill" : "sun.max.fill")
                         .font(.caption2)
@@ -138,7 +145,7 @@ struct RouteCard: View {
 
             if showCameras, itinerary.cameras.camerasPassed > 0 {
                 Label(
-                    "Passes \(itinerary.cameras.camerasPassed) plate reader\(itinerary.cameras.camerasPassed == 1 ? "" : "s")",
+                    "Passes \(itinerary.cameras.camerasPassed) Flock camera\(itinerary.cameras.camerasPassed == 1 ? "" : "s")",
                     systemImage: "camera.fill"
                 )
                 .font(.caption)

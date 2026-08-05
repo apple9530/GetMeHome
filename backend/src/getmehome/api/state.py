@@ -14,11 +14,18 @@ import pickle
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..config import BUILD_DIR, GRAPH_FILE, GRAPH_META_FILE, TRANSIT_FILE
+from ..config import (
+    BUILD_DIR,
+    CRIME_POINTS_FILE,
+    GRAPH_FILE,
+    GRAPH_META_FILE,
+    TRANSIT_FILE,
+)
 from ..graph.model import WalkGraph
 from ..routing.astar import GraphIndex
 from ..routing.multimodal import TransitIndex
 from ..safety.cameras import AlprCamera
+from ..safety.hexgrid import CrimeIndex
 
 log = logging.getLogger("getmehome.state")
 
@@ -29,6 +36,7 @@ class AppState:
     index: GraphIndex
     cameras: list[AlprCamera]
     transit: TransitIndex | None = None
+    crime: CrimeIndex | None = None
 
     @property
     def has_transit(self) -> bool:
@@ -42,6 +50,7 @@ def load_state(
     graph_path: Path = GRAPH_FILE,
     meta_path: Path = GRAPH_META_FILE,
     transit_path: Path = TRANSIT_FILE,
+    crime_path: Path = CRIME_POINTS_FILE,
 ) -> AppState:
     """Load everything from the build directory."""
     global _state
@@ -88,7 +97,20 @@ def load_state(
     else:
         log.warning("no transit timetable at %s — walking only", transit_path)
 
-    _state = AppState(graph=graph, index=index, cameras=cameras, transit=transit)
+    crime = None
+    if crime_path.exists():
+        crime = CrimeIndex.load(crime_path)
+        log.info("%d crime incidents for the map grid", crime.count)
+    else:
+        log.warning(
+            "no crime points at %s — the crime grid overlay will be empty. "
+            "Rebuild the graph to generate it.",
+            crime_path,
+        )
+
+    _state = AppState(
+        graph=graph, index=index, cameras=cameras, transit=transit, crime=crime
+    )
     return _state
 
 

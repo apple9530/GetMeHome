@@ -2,26 +2,27 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
-/// The map: route lines, ALPR camera cones, and the street-safety overlay.
+/// The map: route lines, Flock camera cones, and the crime grid.
 struct RouteMapView: View {
     @Environment(PlannerViewModel.self) private var planner
     @Environment(AppSettings.self) private var settings
-    @Environment(LocationService.self) private var location
 
     @Binding var cameraPosition: MapCameraPosition
 
     @State private var selectedCamera: ALPRCamera?
+    /// The map controls are placed by hand rather than by `.mapControls`, so
+    /// they need the map's scope to stay wired to it.
+    @Namespace private var mapScope
 
     var body: some View {
         MapReader { proxy in
-            Map(position: $cameraPosition, interactionModes: .all) {
+            Map(position: $cameraPosition, interactionModes: .all, scope: mapScope) {
                 UserAnnotation()
 
-                if settings.showSafetyOverlay {
-                    safetyOverlay
+                if settings.showCrimeGrid {
+                    crimeGrid
                 }
 
-                // Unselected routes first so the chosen one draws on top.
                 ForEach(unselectedItineraries) { itinerary in
                     MapPolyline(coordinates: itinerary.allCoordinates)
                         .stroke(
@@ -38,17 +39,12 @@ struct RouteMapView: View {
                     cameraOverlay
                 }
 
-                if let destination = planner.destination {
-                    Marker(destination.name, systemImage: "flag.fill", coordinate: destination.coordinate)
-                        .tint(.red)
-                }
+                endpointMarkers
             }
             .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls {
-                MapCompass()
-                MapUserLocationButton()
-                MapScaleView()
-            }
+            // Suppress the automatic placement, which tucks the controls under
+            // the status bar when the map ignores the top safe area.
+            .mapControlVisibility(.hidden)
             .onMapCameraChange(frequency: .onEnd) { context in
                 let region = context.region
                 planner.refreshOverlays(
@@ -61,17 +57,45 @@ struct RouteMapView: View {
                 )
             }
             .onTapGesture(coordinateSpace: .local) { screenPoint in
-                // Tapping a camera icon opens its detail. Anything else on the
-                // map is left alone so panning stays the primary interaction.
-                if let coordinate = proxy.convert(screenPoint, from: .local) {
-                    selectedCamera = nearestCamera(to: coordinate, within: 40)
-                }
+                guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
+                handleTap(at: coordinate)
             }
+            .overlay(alignment: .topTrailing) { controls }
             .sheet(item: $selectedCamera) { camera in
                 CameraDetailSheet(camera: camera)
-                    .presentationDetents([.height(280)])
+                    .presentationDetents([.height(300)])
+            }
+            .sheet(item: selectedCellBinding) { cell in
+                CrimeCellSheet(cell: cell, radius: planner.crimeCellRadius)
+                    .presentationDetents([.height(420), .medium])
             }
         }
+        .mapScope(mapScope)
+    }
+
+    // MARK: - Controls
+
+    /// Hand-placed so they clear the status bar and Dynamic Island. The
+    /// automatic placement sits flush with the top of the map, which the map
+    /// deliberately extends under.
+    private var controls: some View {
+        VStack(spacing: 10) {
+            MapCompass(scope: mapScope)
+            MapUserLocationButton(scope: mapScope)
+            MapScaleView(scope: mapScope)
+        }
+        .mapControlVisibility(.visible)
+        .buttonBorderShape(.circle)
+        .padding(.trailing, 10)
+        // Clears the status bar / Dynamic Island; the safe area inset is
+        // added on top because the map itself ignores it.
+        .padding(.top, 14)
+        .safeAreaPadding(.top)
+    }
+
+    private var selectedCellBinding: Binding<CrimeCell?> {
+        @Bindable var planner = planner
+        return $planner.selectedCell
     }
 
     // MARK: - Route rendering
@@ -91,9 +115,8 @@ struct RouteMapView: View {
                             lineWidth: 7,
                             lineCap: .round,
                             lineJoin: .round,
-                            // Walking legs are dashed so a glance at the map
-                            // distinguishes them from a train leg without
-                            // needing the legend.
+                            // Walking legs are dashed so a glance distinguishes
+                            // them from a train leg without needing the legend.
                             dash: [1, 11]
                         )
                     )
@@ -119,18 +142,42 @@ struct RouteMapView: View {
         }
     }
 
-    // MARK: - Overlays
+    @MapContentBuilder
+    private var endpointMarkers: some MapContent {
+        if let coordinate = planner.origin.fixedCoordinate {
+            Annotation(planner.origin.displayName, coordinate: coordinate) {
+                Image(systemName: "a.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.white, Color.accentColor)
+            }
+        }
+        if let destination = planner.destination,
+           let coordinate = destination.fixedCoordinate {
+            Annotation(destination.displayName, coordinate: coordinate) {
+                Image(systemName: "b.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.white, Color.red)
+            }
+        }
+    }
+
+    // MARK: - Crime grid
 
     @MapContentBuilder
-    private var safetyOverlay: some MapContent {
-        ForEach(Array(planner.safetySegments.enumerated()), id: \.offset) { _, segment in
-            MapPolyline(coordinates: segment.coordinates)
+    private var crimeGrid: some MapContent {
+        ForEach(planner.crimeCells) { cell in
+            MapPolygon(coordinates: cell.polygon)
+                .foregroundStyle(Theme.crimeCellColor(cell.intensity))
                 .stroke(
-                    Theme.riskColor(segment.risk).opacity(0.55),
-                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                    planner.selectedCell?.id == cell.id
+                        ? Color.primary
+                        : Theme.crimeCellColor(cell.intensity).opacity(0.9),
+                    lineWidth: planner.selectedCell?.id == cell.id ? 2.5 : 0.5
                 )
         }
     }
+
+    // MARK: - Cameras
 
     @MapContentBuilder
     private var cameraOverlay: some MapContent {
@@ -156,9 +203,7 @@ struct RouteMapView: View {
                     .padding(4)
                     .background(Theme.cameraTint, in: Circle())
                     .foregroundStyle(.white)
-                    .accessibilityLabel(
-                        "License plate reader\(camera.operatorName.isEmpty ? "" : ", \(camera.operatorName)")"
-                    )
+                    .accessibilityLabel("Flock camera")
             }
         }
     }
@@ -193,6 +238,21 @@ struct RouteMapView: View {
         return points
     }
 
+    // MARK: - Tap handling
+
+    private func handleTap(at coordinate: CLLocationCoordinate2D) {
+        // Cameras win over cells: they are much smaller targets, so if the tap
+        // is near one that is almost certainly what was meant.
+        if settings.showCameraOverlay,
+           let camera = nearestCamera(to: coordinate, within: 45) {
+            selectedCamera = camera
+            return
+        }
+        if settings.showCrimeGrid, let cell = cell(containing: coordinate) {
+            planner.selectedCell = planner.selectedCell?.id == cell.id ? nil : cell
+        }
+    }
+
     private func nearestCamera(
         to coordinate: CLLocationCoordinate2D, within metres: Double
     ) -> ALPRCamera? {
@@ -201,6 +261,109 @@ struct RouteMapView: View {
             .map { ($0, CLLocation(latitude: $0.lat, longitude: $0.lon).distance(from: target)) }
             .filter { $0.1 <= metres }
             .min { $0.1 < $1.1 }?.0
+    }
+
+    /// The cell a tap fell in.
+    ///
+    /// Nearest-centre rather than a point-in-polygon test: for a regular
+    /// hexagonal tiling the two are equivalent, and the distance check is far
+    /// cheaper across several hundred cells.
+    private func cell(containing coordinate: CLLocationCoordinate2D) -> CrimeCell? {
+        guard planner.crimeCellRadius > 0 else { return nil }
+        let target = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        return planner.crimeCells
+            .map { ($0, CLLocation(latitude: $0.centerLat, longitude: $0.centerLon).distance(from: target)) }
+            .filter { $0.1 <= planner.crimeCellRadius }
+            .min { $0.1 < $1.1 }?.0
+    }
+}
+
+// MARK: - Detail sheets
+
+/// What happened inside one hexagon.
+struct CrimeCellSheet: View {
+    let cell: CrimeCell
+    let radius: Double
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(cell.total) incident\(cell.total == 1 ? "" : "s")")
+                        .font(.title2.bold())
+                    Text("Within about \(Int(radius)) m of here")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityLabel("Close")
+            }
+
+            HStack(spacing: 22) {
+                stat("\(Int(cell.nightShare * 100))%", "At night")
+                if !cell.latest.isEmpty {
+                    stat(cell.latest, "Most recent")
+                }
+            }
+
+            Divider()
+
+            Text("By type")
+                .font(.subheadline.weight(.semibold))
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(cell.byOffense, id: \.offense) { entry in
+                        HStack {
+                            Text(entry.displayName)
+                                .font(.subheadline)
+                            Spacer()
+                            Text("\(entry.count)")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        // A bar makes the shape of the mix readable at a glance
+                        // where a column of numbers does not.
+                        GeometryReader { geometry in
+                            Capsule()
+                                .fill(Theme.crimeCellColor(1.0).opacity(0.8))
+                                .frame(
+                                    width: geometry.size.width
+                                        * CGFloat(entry.count)
+                                        / CGFloat(max(1, cell.byOffense.first?.count ?? 1))
+                                )
+                        }
+                        .frame(height: 4)
+                    }
+                }
+            }
+
+            Text(
+                "Reported incidents from MPD over the last three years. "
+                    + "Reporting varies by neighbourhood — this is not a "
+                    + "measure of the people who live here."
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+    }
+
+    private func stat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(value).font(.headline.monospacedDigit())
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -218,13 +381,15 @@ struct CameraDetailSheet: View {
                     .background(Theme.cameraTint, in: Circle())
                     .foregroundStyle(.white)
                 VStack(alignment: .leading) {
-                    Text("Licence plate reader")
+                    Text("Flock camera")
                         .font(.headline)
-                    if !camera.operatorName.isEmpty {
-                        Text(camera.operatorName)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(
+                        camera.operatorName.isEmpty
+                            ? "Licence plate reader"
+                            : camera.operatorName
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -245,7 +410,7 @@ struct CameraDetailSheet: View {
                 """
                 Camera locations come from OpenStreetMap contributors. Coverage \
                 is incomplete — a street with no camera shown here may still \
-                have one.
+                have one. Not every plate reader is operated by Flock.
                 """
             )
             .font(.footnote)

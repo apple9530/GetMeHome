@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from getmehome.api.main import app
 from getmehome.api.state import AppState, set_state
 from getmehome.routing.astar import GraphIndex
+from getmehome.safety.hexgrid import CrimeIndex
 from getmehome.safety.scoring import apply_scores
 
 from .fixtures import (
@@ -33,15 +34,20 @@ def client():
         incidents=incidents,
         cameras=cams,
     )
-    set_state(
-        AppState(graph=graph, index=GraphIndex(graph), cameras=cams, transit=None)
-    )
-    # The lifespan hook would try to load a real graph from disk; state is
-    # already injected, so skip it.
-    with TestClient(app, raise_server_exceptions=True) as c:
-        set_state(
-            AppState(graph=graph, index=GraphIndex(graph), cameras=cams, transit=None)
+    def build_state():
+        return AppState(
+            graph=graph,
+            index=GraphIndex(graph),
+            cameras=cams,
+            transit=None,
+            crime=CrimeIndex.from_incidents(incidents),
         )
+
+    set_state(build_state())
+    # The lifespan hook tries to load a real graph from disk and clears state
+    # when it cannot find one, so re-inject after the client starts.
+    with TestClient(app, raise_server_exceptions=True) as c:
+        set_state(build_state())
         yield c
 
 
@@ -165,25 +171,72 @@ def test_cameras_overlay_respects_bbox(client):
     assert r.json()["total"] == 0
 
 
-def test_safety_overlay(client):
+def test_crime_grid(client):
     r = client.get(
-        "/safety/overlay",
+        "/crime/grid",
         params={
-            "minLat": 38.85,
-            "minLon": -77.10,
-            "maxLat": 38.99,
-            "maxLon": -76.95,
-            "night": True,
+            "minLat": 38.895,
+            "minLon": -77.040,
+            "maxLat": 38.912,
+            "maxLon": -77.020,
         },
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["isNight"] is True
-    assert body["segments"]
-    risks = [s["risk"] for s in body["segments"]]
-    assert all(0.0 <= x <= 1.0 for x in risks)
-    # The crime cluster must make some segments visibly riskier than others.
-    assert max(risks) > min(risks)
+
+    assert body["cells"], "the fixture's crime cluster should produce cells"
+    assert body["radius"] > 0
+    assert body["totalIncidents"] > 0
+
+    for cell in body["cells"]:
+        # Six corners, as flat lat/lon pairs.
+        assert len(cell["vertices"]) == 12
+        assert cell["total"] > 0
+        assert 0.0 <= cell["intensity"] <= 1.0
+        assert 0.0 <= cell["nightShare"] <= 1.0
+        assert cell["byOffense"]
+        assert sum(o["count"] for o in cell["byOffense"]) <= cell["total"]
+        assert cell["id"]
+
+    # Sorted busiest-first, and the busiest is normalised to 1.
+    intensities = [c["intensity"] for c in body["cells"]]
+    assert intensities == sorted(intensities, reverse=True)
+    assert intensities[0] == pytest.approx(1.0)
+
+
+def test_crime_grid_night_filter(client):
+    params = {
+        "minLat": 38.895, "minLon": -77.040,
+        "maxLat": 38.912, "maxLon": -77.020,
+    }
+    everything = client.get("/crime/grid", params=params).json()
+    nights = client.get("/crime/grid", params={**params, "nightOnly": "true"}).json()
+
+    assert nights["nightOnly"] is True
+    assert nights["totalIncidents"] <= everything["totalIncidents"]
+
+
+def test_crime_grid_adapts_cell_size_to_zoom(client):
+    """Zooming out must return bigger cells, not more of them."""
+    tight = client.get("/crime/grid", params={
+        "minLat": 38.900, "minLon": -77.035,
+        "maxLat": 38.906, "maxLon": -77.027,
+    }).json()
+    wide = client.get("/crime/grid", params={
+        "minLat": 38.79, "minLon": -77.13,
+        "maxLat": 39.01, "maxLon": -76.90,
+    }).json()
+
+    assert wide["radius"] > tight["radius"]
+    assert len(wide["cells"]) <= 700
+
+
+def test_crime_grid_outside_dc_is_empty(client):
+    r = client.get("/crime/grid", params={
+        "minLat": 0.0, "minLon": 0.0, "maxLat": 0.5, "maxLon": 0.5,
+    })
+    assert r.status_code == 200
+    assert r.json()["cells"] == []
 
 
 def test_step_voice_and_display_text_differ_usefully(client):

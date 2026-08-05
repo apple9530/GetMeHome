@@ -20,6 +20,23 @@ enum Theme {
         safetyColor(Int((1 - risk) * 100))
     }
 
+    /// Fill for a crime-grid hexagon.
+    ///
+    /// A sequential single-hue ramp, not a rainbow: intensity is an ordered
+    /// quantity, and a rainbow scale implies category boundaries that do not
+    /// exist. Opacity carries most of the signal so the map underneath stays
+    /// readable — the grid is context, not the subject.
+    static func crimeCellColor(_ intensity: Double) -> Color {
+        let t = min(1, max(0, intensity))
+        // Pale amber through to deep red as intensity rises.
+        return Color(
+            red: 0.78 + 0.14 * t,
+            green: 0.55 - 0.36 * t,
+            blue: 0.20 - 0.09 * t
+        )
+        .opacity(0.18 + 0.42 * t)
+    }
+
     static let cameraTint = Color(red: 0.55, green: 0.28, blue: 0.75)
     static let routeLine = Color.accentColor
     static let alternateRouteLine = Color.secondary.opacity(0.55)

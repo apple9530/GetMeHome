@@ -23,6 +23,10 @@ BUILD_DIR = DATA_DIR / "build"
 GRAPH_FILE = BUILD_DIR / "dc_graph.npz"
 GRAPH_META_FILE = BUILD_DIR / "dc_graph_meta.json"
 TRANSIT_FILE = BUILD_DIR / "dc_transit.pkl"
+# Incident points kept for the map's crime grid. The graph bakes crime into
+# per-segment scores, which cannot be un-mixed back into individual
+# incidents, so the raw points are carried separately for the overlay.
+CRIME_POINTS_FILE = BUILD_DIR / "crime_points.npz"
 
 # --------------------------------------------------------------------------
 # Study area — Washington, DC (plus a small collar so routes near the border

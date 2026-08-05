@@ -23,8 +23,13 @@ final class AppSettings {
         didSet { defaults.set(showCameraOverlay, forKey: Keys.showCameras) }
     }
 
-    var showSafetyOverlay: Bool {
-        didSet { defaults.set(showSafetyOverlay, forKey: Keys.showSafety) }
+    var showCrimeGrid: Bool {
+        didSet { defaults.set(showCrimeGrid, forKey: Keys.showCrimeGrid) }
+    }
+
+    /// Restricts the crime grid to evening and midnight shift incidents.
+    var crimeGridNightOnly: Bool {
+        didSet { defaults.set(crimeGridNightOnly, forKey: Keys.crimeGridNight) }
     }
 
     var includeTransit: Bool {
@@ -49,7 +54,8 @@ final class AppSettings {
         static let server = "serverURL"
         static let avoidCameras = "avoidCameras"
         static let showCameras = "showCameraOverlay"
-        static let showSafety = "showSafetyOverlay"
+        static let showCrimeGrid = "showCrimeGrid"
+        static let crimeGridNight = "crimeGridNightOnly"
         static let includeTransit = "includeTransit"
         static let voice = "voiceGuidance"
     }
@@ -59,7 +65,8 @@ final class AppSettings {
         serverURLString = defaults.string(forKey: Keys.server) ?? Self.defaultServer
         avoidCameras = defaults.bool(forKey: Keys.avoidCameras)
         showCameraOverlay = defaults.bool(forKey: Keys.showCameras)
-        showSafetyOverlay = defaults.bool(forKey: Keys.showSafety)
+        showCrimeGrid = defaults.bool(forKey: Keys.showCrimeGrid)
+        crimeGridNightOnly = defaults.bool(forKey: Keys.crimeGridNight)
         // These two default to on, so read them only if previously written.
         includeTransit = defaults.object(forKey: Keys.includeTransit) as? Bool ?? true
         voiceGuidance = defaults.object(forKey: Keys.voice) as? Bool ?? true

@@ -20,6 +20,7 @@ import numpy as np
 from ..config import (
     BUILD_DIR,
     CRIME,
+    CRIME_POINTS_FILE,
     DC_BBOX,
     GRAPH_FILE,
     GRAPH_META_FILE,
@@ -32,6 +33,7 @@ from ..ingest.gtfs import load_gtfs
 from ..ingest.osm import download_extract, read_osm
 from ..ingest.streetlights import fetch_streetlights, load_streetlights, save_streetlights
 from ..safety.cameras import AlprCamera
+from ..safety.hexgrid import CrimeIndex
 from ..safety.scoring import apply_scores
 from .model import WalkGraph, build_graph, largest_connected_component
 
@@ -166,6 +168,12 @@ def build(
 
     (BUILD_DIR / "cameras.json").write_text(
         json.dumps([c.to_dict() for c in cameras])
+    )
+
+    CrimeIndex.from_incidents(incidents).save(CRIME_POINTS_FILE)
+    log.info(
+        "wrote %s (%.1f MB)",
+        CRIME_POINTS_FILE, CRIME_POINTS_FILE.stat().st_size / 1e6,
     )
 
     # --- transit -------------------------------------------------------

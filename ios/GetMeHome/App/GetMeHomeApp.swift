@@ -111,7 +111,7 @@ struct RootView: View {
     @ViewBuilder
     private var bottomPanel: some View {
         switch planner.phase {
-        case .idle, .searching, .routing:
+        case .idle, .routing:
             SearchView()
                 .clipShape(RoundedRectangle(cornerRadius: 22))
                 .padding(.horizontal, 8)
@@ -136,10 +136,18 @@ struct RootView: View {
         guard let itinerary = planner.selectedItinerary,
               let destination = planner.destination else { return }
 
+        // The destination is normally a fixed place, but it can be "current
+        // location" if the user swapped the endpoints. Fall back to the end of
+        // the route geometry, which is where the router actually terminated.
+        let target = destination.fixedCoordinate
+            ?? itinerary.allCoordinates.last
+            ?? location.location?.coordinate
+        guard let target else { return }
+
         navigationModel = NavigationViewModel(
             itinerary: itinerary,
-            destination: destination.coordinate,
-            destinationName: destination.name,
+            destination: target,
+            destinationName: planner.destinationName,
             modes: settings.modes,
             avoidCameras: settings.avoidCameras,
             speech: speech,

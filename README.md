@@ -22,10 +22,10 @@ Worth being straight about this before you invest time in it.
 
 | Part | State |
 |---|---|
-| Backend routing, safety model, transit, API | Written and covered by 51 passing tests |
+| Backend routing, safety model, transit, crime grid, API | Written and covered by 76 passing tests |
 | `RouteTracker` navigation maths | Algorithm validated independently against hand-computed cases |
-| Rest of the iOS app | **Written but never compiled** |
-| The DC data build (`make graph`) | **Never run against the real feeds** |
+| iOS app | Compiles and launches; UI beyond that not exercised here |
+| The DC data build (`make graph`) | Streetlight + crime ingestion fixed against the real feeds |
 
 The environment this was built in had no macOS or Swift toolchain, and its
 network policy blocked `maps2.dcgis.dc.gov`, `opendata.dc.gov`,
@@ -36,7 +36,7 @@ name in the DDOT streetlight layer. `ArcGisClient.find_layers` and
 `pick_field` exist precisely so that turns into a one-line change rather than
 a rewrite.
 
-Expect the first Xcode build to surface some compiler errors too.
+The iOS app has since been confirmed to compile and launch on the simulator.
 
 ---
 
@@ -163,8 +163,33 @@ a privacy consideration, not a danger, and merging the two would make both
 numbers mean less. It is its own overlay and its own opt-in cost term.
 
 **The data is crowdsourced and incomplete.** A street with no camera shown may
-well have one. The app says so at the point of use, and so should you if you
-build on this.
+well have one, and not every plate reader is operated by Flock. The app says
+so at the point of use, and so should you if you build on this.
+
+---
+
+## The crime grid
+
+Incidents are binned into hexagons that can be tapped for what was actually
+reported there — counts by offence type, the share that happened at night, and
+the most recent date.
+
+Hexagons rather than squares because every neighbour of a hexagon is the same
+distance away and shares a full edge, so a cluster reads the same whichever way
+it is oriented. A square grid has neighbours at two different distances (edge
+versus corner), which makes diagonal clusters look weaker than identical
+horizontal ones.
+
+Two details that matter for how it feels:
+
+* **The grid is anchored to the projection origin**, not to the viewport, so
+  cells stay put while you pan rather than reflowing under your finger.
+* **Cell size comes from a fixed ladder** and adapts to zoom, capped at 700
+  cells. This replaced an earlier per-street risk overlay that shipped
+  thousands of individual polylines and stalled the map trying to draw them.
+
+Cell colour is a sequential single-hue ramp, not a rainbow: intensity is an
+ordered quantity, and a rainbow implies category boundaries that do not exist.
 
 ---
 
@@ -228,8 +253,8 @@ provisioning profile expires every 7 days and you will need to re-install.
 | Endpoint | Purpose |
 |---|---|
 | `POST /route` | Plan itineraries. Body takes origin, destination, modes, `avoidCameras`, optional `departAt` and `forceNight`. |
-| `GET /cameras` | ALPR cameras in a bbox, for the overlay. |
-| `GET /safety/overlay` | Per-segment risk in a bbox, for colouring streets. |
+| `GET /cameras` | Flock/ALPR cameras in a bbox, for the overlay. |
+| `GET /crime/grid` | Incidents binned into hexagons over a bbox, for the map overlay. |
 | `GET /geocode` · `GET /reverse` | Place search, via Nominatim. |
 | `GET /meta` · `GET /health` | Build provenance and liveness. |
 
@@ -283,11 +308,11 @@ backend/
     daylight.py          solar elevation
     graph/               graph model + build pipeline
     ingest/              OSM, ArcGIS, GTFS readers
-    safety/              lighting, crime, cameras, scoring
+    safety/              lighting, crime, cameras, hex grid, scoring
     routing/             A*, alternatives, RAPTOR, multimodal
     nav/                 turn-by-turn instructions
     api/                 FastAPI app
-  tests/                 51 tests, no data build required
+  tests/                 76 tests, no data build required
 ios/
   project.yml            XcodeGen spec
   GetMeHome/

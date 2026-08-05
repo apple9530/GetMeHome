@@ -3,13 +3,13 @@ import MapKit
 import Observation
 import SwiftUI
 
-/// Owns the plan-a-route flow: search, fetch, select, hand off to navigation.
+/// Owns the plan-a-route flow: pick both ends, fetch, select, hand off to
+/// navigation.
 @Observable
 @MainActor
 final class PlannerViewModel {
     enum Phase: Equatable {
         case idle
-        case searching
         case routing
         case showingOptions
         case navigating
@@ -21,17 +21,38 @@ final class PlannerViewModel {
     private(set) var isNight = false
     private(set) var searchResults: [GeocodeResult] = []
     private(set) var cameras: [ALPRCamera] = []
-    private(set) var safetySegments: [SafetySegment] = []
+    private(set) var crimeCells: [CrimeCell] = []
+    private(set) var crimeCellRadius: Double = 0
     private(set) var errorMessage: String?
+    private(set) var isSearching = false
 
+    /// Both ends of the route. Origin defaults to wherever the user is, which
+    /// is the overwhelmingly common case, but is fully editable.
+    var origin: RoutePoint = .currentLocation
+    var destination: RoutePoint?
+
+    var editingField: RouteField = .destination
     var selectedItineraryID: String?
-    var destination: GeocodeResult?
+    var selectedCell: CrimeCell?
+
     var searchText = "" {
-        didSet { scheduleSearch() }
+        didSet {
+            guard searchText != oldValue else { return }
+            scheduleSearch()
+        }
     }
 
     var selectedItinerary: Itinerary? {
         itineraries.first { $0.id == selectedItineraryID } ?? itineraries.first
+    }
+
+    var canRoute: Bool {
+        destination != nil
+    }
+
+    /// The name shown on the destination marker and spoken on arrival.
+    var destinationName: String {
+        destination?.displayName ?? "your destination"
     }
 
     private let client: RoutingClient
@@ -48,6 +69,77 @@ final class PlannerViewModel {
         self.settings = settings
     }
 
+    // MARK: - Editing the endpoints
+
+    func beginEditing(_ field: RouteField) {
+        editingField = field
+        searchTask?.cancel()
+        searchText = ""
+        searchResults = []
+    }
+
+    func swapEndpoints() {
+        let previousOrigin = origin
+        origin = destination ?? .currentLocation
+        destination = previousOrigin
+        Task { await requestRoutes() }
+    }
+
+    func clear(_ field: RouteField) {
+        switch field {
+        case .origin:
+            origin = .currentLocation
+        case .destination:
+            destination = nil
+            itineraries = []
+            selectedItineraryID = nil
+            phase = .idle
+        }
+    }
+
+    /// Apply a search result to whichever field is being edited.
+    func select(_ result: GeocodeResult) async {
+        switch editingField {
+        case .origin:
+            origin = .place(result)
+            // Picking a start with no end yet is a natural point to move on.
+            if destination == nil {
+                editingField = .destination
+                clearSearch()
+                return
+            }
+        case .destination:
+            destination = .place(result)
+        }
+        clearSearch()
+        await requestRoutes()
+    }
+
+    func useCurrentLocation(for field: RouteField) async {
+        switch field {
+        case .origin: origin = .currentLocation
+        case .destination: destination = .currentLocation
+        }
+        clearSearch()
+        await requestRoutes()
+    }
+
+    /// Name a dropped pin so the endpoint card is not just coordinates.
+    func resolvePin(at coordinate: CLLocationCoordinate2D, for field: RouteField) async {
+        let fallback = GeocodeResult(
+            name: "Dropped pin",
+            address: String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude),
+            lat: coordinate.latitude,
+            lon: coordinate.longitude
+        )
+        let resolved = (try? await client.reverseGeocode(coordinate)) ?? fallback
+        switch field {
+        case .origin: origin = .place(resolved)
+        case .destination: destination = .place(resolved)
+        }
+        await requestRoutes()
+    }
+
     // MARK: - Search
 
     private func scheduleSearch() {
@@ -55,13 +147,15 @@ final class PlannerViewModel {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.count >= 2 else {
             searchResults = []
+            isSearching = false
             return
         }
 
+        isSearching = true
         searchTask = Task { [weak self] in
             guard let self else { return }
-            // Debounce: the geocoder is rate-limited and a keystroke-per-request
-            // pattern gets throttled within a few words.
+            // Debounce: the geocoder is rate-limited and a request per
+            // keystroke gets throttled within a few words.
             try? await Task.sleep(for: .milliseconds(320))
             guard !Task.isCancelled else { return }
 
@@ -74,6 +168,7 @@ final class PlannerViewModel {
                 searchResults = []
                 errorMessage = Self.message(for: error)
             }
+            isSearching = false
         }
     }
 
@@ -81,27 +176,10 @@ final class PlannerViewModel {
         searchTask?.cancel()
         searchText = ""
         searchResults = []
-    }
-
-    /// Name a dropped pin so the destination card is not just coordinates.
-    func resolvePin(at coordinate: CLLocationCoordinate2D) async {
-        let fallback = GeocodeResult(
-            name: "Dropped pin",
-            address: String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude),
-            lat: coordinate.latitude,
-            lon: coordinate.longitude
-        )
-        destination = (try? await client.reverseGeocode(coordinate)) ?? fallback
-        await requestRoutes()
+        isSearching = false
     }
 
     // MARK: - Routing
-
-    func select(_ result: GeocodeResult) async {
-        destination = result
-        clearSearch()
-        await requestRoutes()
-    }
 
     func requestRoutes() async {
         guard let destination else { return }
@@ -110,11 +188,13 @@ final class PlannerViewModel {
         errorMessage = nil
 
         do {
-            let origin = try await location.currentLocation()
+            let start = try await resolve(origin)
+            let end = try await resolve(destination)
+
             let response = try await client.route(
-                from: origin.coordinate,
-                to: destination.coordinate,
-                destinationName: destination.name,
+                from: start,
+                to: end,
+                destinationName: destinationName,
                 modes: settings.modes,
                 avoidCameras: settings.avoidCameras
             )
@@ -126,18 +206,28 @@ final class PlannerViewModel {
             phase = response.itineraries.isEmpty ? .idle : .showingOptions
 
             if response.itineraries.isEmpty {
-                errorMessage = "No route found to \(destination.name)."
+                errorMessage = "No route found to \(destinationName)."
             }
         } catch let error as CLError where error.code == .denied {
             phase = .idle
-            errorMessage = "Location access is off. Turn it on in Settings to plan a route."
+            errorMessage = "Location access is off. Turn it on in Settings, "
+                + "or set a starting point instead of using your location."
+        } catch is CLError {
+            phase = .idle
+            errorMessage = "Couldn't get your location. Try setting a starting "
+                + "point manually."
         } catch {
             phase = .idle
             errorMessage = Self.message(for: error)
         }
     }
 
-    /// Re-run the current request after a preference change.
+    /// Turn a `RoutePoint` into a coordinate, taking a live fix if needed.
+    private func resolve(_ point: RoutePoint) async throws -> CLLocationCoordinate2D {
+        if let fixed = point.fixedCoordinate { return fixed }
+        return try await location.currentLocation().coordinate
+    }
+
     func refreshRoutes() async {
         guard destination != nil, phase == .showingOptions else { return }
         await requestRoutes()
@@ -147,7 +237,9 @@ final class PlannerViewModel {
         itineraries = []
         notices = []
         destination = nil
+        origin = .currentLocation
         selectedItineraryID = nil
+        editingField = .destination
         phase = .idle
     }
 
@@ -163,9 +255,9 @@ final class PlannerViewModel {
     // MARK: - Overlays
 
     func refreshOverlays(for bounds: MapBounds) {
-        guard settings.showCameraOverlay || settings.showSafetyOverlay else {
+        guard settings.showCameraOverlay || settings.showCrimeGrid else {
             cameras = []
-            safetySegments = []
+            crimeCells = []
             return
         }
         // Panning fires continuously; only refetch on a real viewport change.
@@ -186,16 +278,24 @@ final class PlannerViewModel {
                 cameras = []
             }
 
-            if settings.showSafetyOverlay {
-                if let response = try? await client.safetyOverlay(in: bounds, night: nil),
-                   !Task.isCancelled {
-                    safetySegments = response.segments
-                    isNight = response.isNight
+            if settings.showCrimeGrid {
+                if let response = try? await client.crimeGrid(
+                    in: bounds, nightOnly: settings.crimeGridNightOnly
+                ), !Task.isCancelled {
+                    crimeCells = response.cells
+                    crimeCellRadius = response.radius
                 }
             } else {
-                safetySegments = []
+                crimeCells = []
+                selectedCell = nil
             }
         }
+    }
+
+    /// Force the next `refreshOverlays` to refetch even if the viewport has
+    /// not moved — used when a toggle changes what should be shown.
+    func invalidateOverlays() {
+        lastOverlayBounds = nil
     }
 
     func dismissError() {

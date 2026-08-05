@@ -82,12 +82,12 @@ actor RoutingClient {
         try await get("/cameras", query: region.queryItems)
     }
 
-    func safetyOverlay(in region: MapBounds, night: Bool?) async throws -> SafetyOverlayResponse {
+    func crimeGrid(in region: MapBounds, nightOnly: Bool) async throws -> CrimeGridResponse {
         var items = region.queryItems
-        if let night {
-            items.append(URLQueryItem(name: "night", value: night ? "true" : "false"))
+        if nightOnly {
+            items.append(URLQueryItem(name: "nightOnly", value: "true"))
         }
-        return try await get("/safety/overlay", query: items)
+        return try await get("/crime/grid", query: items)
     }
 
     // MARK: - Places

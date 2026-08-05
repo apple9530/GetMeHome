@@ -125,19 +125,33 @@ class CameraResponse(BaseModel):
     truncated: bool = False
 
 
-class SegmentSafetyModel(BaseModel):
-    """One segment's safety, for the map's colour overlay."""
-
-    polyline: list[float]
-    risk: float
-    lit: float
-    crime: float
+class OffenseCount(BaseModel):
+    offense: str
+    count: int
 
 
-class SafetyOverlayResponse(BaseModel):
-    segments: list[SegmentSafetyModel]
-    isNight: bool
-    truncated: bool = False
+class CrimeCellModel(BaseModel):
+    """One hexagon of aggregated incidents, for the crime grid overlay."""
+
+    id: str
+    centerLat: float
+    centerLon: float
+    # The six corners, flat [lat, lon, ...]. Sent rather than derived on the
+    # client so the drawn cell is exactly the one the server binned into.
+    vertices: list[float]
+    total: int
+    intensity: float
+    nightShare: float
+    byOffense: list[OffenseCount]
+    latest: str = ""
+
+
+class CrimeGridResponse(BaseModel):
+    cells: list[CrimeCellModel]
+    # Cell circumradius in metres, so the client can label the scale.
+    radius: float
+    totalIncidents: int
+    nightOnly: bool = False
 
 
 class GeocodeResult(BaseModel):
