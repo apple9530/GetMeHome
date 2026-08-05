@@ -12,13 +12,16 @@ deduplicated on CCN (the MPD case number).
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ..config import CRIME, MPD_CRIME_SERVICE_URL
 from ..safety.crime_model import CrimeIncident
-from .arcgis import ArcGisClient, feature_point, pick_field
+from .arcgis import ArcGisClient, ArcGisError, feature_point, pick_field
+
+log = logging.getLogger("getmehome.ingest.crime")
 
 _OFFENSE_FIELDS = ("OFFENSE", "OFFENSE_TEXT", "OFFENSETEXT", "CRIMETYPE")
 _METHOD_FIELDS = ("METHOD", "WEAPON")
@@ -100,44 +103,82 @@ def fetch_crime(
                 f"available: {[layer.get('name') for layer in layers]}"
             )
 
+        targets = client.queryable_point_layers(targets)
+        if not targets:
+            raise RuntimeError(
+                f"no queryable crime point layers at {service_url}"
+            )
+        log.info(
+            "querying crime layers: %s",
+            [(t.get("id"), t.get("name")) for t in targets],
+        )
+
         for layer in targets:
             layer_id = layer["id"]
-            fields = client.layer_fields(layer_id)
-            f_off = pick_field(fields, *_OFFENSE_FIELDS)
-            f_met = pick_field(fields, *_METHOD_FIELDS)
-            f_shift = pick_field(fields, *_SHIFT_FIELDS)
-            f_date = pick_field(fields, *_DATE_FIELDS)
-            f_ccn = pick_field(fields, *_CCN_FIELDS)
-
-            for feature in client.iter_features(layer_id):
-                point = feature_point(feature)
-                if point is None:
-                    continue
-                props = feature.get("properties") or {}
-
-                if f_ccn:
-                    ccn = str(props.get(f_ccn) or "")
-                    if ccn and ccn in seen:
-                        continue
-                    if ccn:
-                        seen.add(ccn)
-
-                when = parse_timestamp(props.get(f_date)) if f_date else None
-                if when is None:
-                    continue
-
-                incidents.append(
-                    CrimeIncident(
-                        lat=point[0],
-                        lon=point[1],
-                        offense=str(props.get(f_off) or "").strip().upper(),
-                        method=str(props.get(f_met) or "").strip().upper(),
-                        shift=str(props.get(f_shift) or "").strip().upper(),
-                        reported_at=when,
-                    )
+            try:
+                fetched = _fetch_crime_layer(client, layer_id, seen, limit, len(incidents))
+            except (ArcGisError, RuntimeError) as exc:
+                # Losing one year still leaves a usable density surface; losing
+                # the whole build over it does not.
+                log.warning(
+                    "skipping crime layer %s (%s): %s",
+                    layer_id, layer.get("name", ""), exc,
                 )
-                if limit and len(incidents) >= limit:
-                    return incidents
+                continue
+            incidents.extend(fetched)
+            if limit and len(incidents) >= limit:
+                break
+
+    if not incidents:
+        raise RuntimeError(f"no crime incidents returned by {service_url}")
+    return incidents
+
+
+def _fetch_crime_layer(
+    client: ArcGisClient,
+    layer_id: int,
+    seen: set[str],
+    limit: int | None,
+    already: int,
+) -> list[CrimeIncident]:
+    """Read every incident from one layer, skipping CCNs already collected."""
+    incidents: list[CrimeIncident] = []
+    fields = client.layer_fields(layer_id)
+    f_off = pick_field(fields, *_OFFENSE_FIELDS)
+    f_met = pick_field(fields, *_METHOD_FIELDS)
+    f_shift = pick_field(fields, *_SHIFT_FIELDS)
+    f_date = pick_field(fields, *_DATE_FIELDS)
+    f_ccn = pick_field(fields, *_CCN_FIELDS)
+
+    for feature in client.iter_features(layer_id):
+        point = feature_point(feature)
+        if point is None:
+            continue
+        props = feature.get("properties") or {}
+
+        if f_ccn:
+            ccn = str(props.get(f_ccn) or "")
+            if ccn and ccn in seen:
+                continue
+            if ccn:
+                seen.add(ccn)
+
+        when = parse_timestamp(props.get(f_date)) if f_date else None
+        if when is None:
+            continue
+
+        incidents.append(
+            CrimeIncident(
+                lat=point[0],
+                lon=point[1],
+                offense=str(props.get(f_off) or "").strip().upper(),
+                method=str(props.get(f_met) or "").strip().upper(),
+                shift=str(props.get(f_shift) or "").strip().upper(),
+                reported_at=when,
+            )
+        )
+        if limit and already + len(incidents) >= limit:
+            return incidents
 
     return incidents
 
