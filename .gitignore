@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+venv/
+.venv/
+
+# Built data — regenerate with `make graph`, far too large for git
+backend/data/raw/
+backend/data/build/
+
+# Xcode
+ios/build/
+ios/DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+.DS_Store
