@@ -22,7 +22,7 @@ Worth being straight about this before you invest time in it.
 
 | Part | State |
 |---|---|
-| Backend routing, safety model, transit, crime grid, API | Written and covered by 76 passing tests |
+| Backend routing, safety model, transit, crime grid, API | Written and covered by 82 passing tests |
 | `RouteTracker` navigation maths | Algorithm validated independently against hand-computed cases |
 | iOS app | Compiles and launches; UI beyond that not exercised here |
 | The DC data build (`make graph`) | Streetlight + crime ingestion fixed against the real feeds |
@@ -96,11 +96,18 @@ year.
 MPD incidents over three years, as a rasterised Gaussian KDE. Each incident is
 weighted by:
 
-- **severity** — homicide 1.0, sexual abuse 0.95, assault with a dangerous
-  weapon 0.80, robbery 0.75, down to theft 0.12
+- **severity** — homicide and sexual abuse 1.0, assault with a dangerous
+  weapon 0.90, robbery 0.85, then a deliberately wide gap down to burglary
+  0.15 and vehicle theft 0.08. A stolen car and a sexual assault are not two
+  points on one scale of "how bad": to someone choosing which street to walk
+  down at night they are barely the same kind of information. Property crime
+  stays non-zero because a street with a lot of it usually has little passive
+  supervision, which is a weak but real signal.
 - **pedestrian relevance**, kept deliberately separate — a burglary is a
   serious crime that says relatively little about the risk to someone walking
-  past, so it carries 0.25 here while a street robbery carries 1.0
+  past, so it carries 0.25 here while a street robbery carries 1.0. Multiplied
+  through, the least serious violent offence still outweighs the worst
+  property offence by more than 20x.
 - **weapon** — a gun multiplies by 1.4, a knife by 1.2
 - **recency** — exponential decay with a 400-day half-life
 
@@ -171,8 +178,13 @@ so at the point of use, and so should you if you build on this.
 ## The crime grid
 
 Incidents are binned into hexagons that can be tapped for what was actually
-reported there — counts by offence type, the share that happened at night, and
-the most recent date.
+reported there — the count of violent and sexual offences, the share that
+happened at night, the most recent date, and a breakdown by offence type.
+
+That breakdown is **ordered by weighted contribution, not by raw count**, and
+each row shows its share of the cell's risk. A block with forty car break-ins
+and one robbery lists the robbery first, because that is where the risk
+actually is; ordering by count would bury it.
 
 Hexagons rather than squares because every neighbour of a hexagon is the same
 distance away and shares a full edge, so a cluster reads the same whichever way
@@ -184,9 +196,11 @@ Two details that matter for how it feels:
 
 * **The grid is anchored to the projection origin**, not to the viewport, so
   cells stay put while you pan rather than reflowing under your finger.
-* **Cell size comes from a fixed ladder** and adapts to zoom, capped at 700
-  cells. This replaced an earlier per-street risk overlay that shipped
-  thousands of individual polylines and stalled the map trying to draw them.
+* **Cell size comes from a fixed ladder** and adapts to zoom, with a 110 m
+  floor and a 320-cell ceiling. Both limits exist because each cell is a
+  separate filled map overlay and render cost, not payload size, is what
+  binds — the same mistake the per-street overlay this replaced made at a
+  larger scale.
 
 Cell colour is a sequential single-hue ramp, not a rainbow: intensity is an
 ordered quantity, and a rainbow implies category boundaries that do not exist.
@@ -312,7 +326,7 @@ backend/
     routing/             A*, alternatives, RAPTOR, multimodal
     nav/                 turn-by-turn instructions
     api/                 FastAPI app
-  tests/                 76 tests, no data build required
+  tests/                 82 tests, no data build required
 ios/
   project.yml            XcodeGen spec
   GetMeHome/

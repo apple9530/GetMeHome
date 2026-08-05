@@ -148,11 +148,15 @@ def test_cells_aggregate_counts_and_offenses():
     assert cells
     busiest = cells[0]
     assert busiest.total == 17
-    breakdown = dict(busiest.by_offense)
-    assert breakdown["ROBBERY"] == 12
-    assert breakdown["HOMICIDE"] == 5
-    # Most common first.
-    assert busiest.by_offense[0][0] == "ROBBERY"
+    breakdown = {b.offense: b for b in busiest.by_offense}
+    assert breakdown["ROBBERY"].count == 12
+    assert breakdown["HOMICIDE"].count == 5
+    assert breakdown["ROBBERY"].category == "violent"
+    assert breakdown["HOMICIDE"].category == "violent"
+    # Both are violent, so all 17 count as serious.
+    assert busiest.serious_count == 17
+    # Shares are a proportion of the cell's weighted risk.
+    assert sum(b.share for b in busiest.by_offense) == pytest.approx(1.0, abs=0.01)
 
 
 def test_intensity_is_severity_weighted_not_a_raw_count():
@@ -186,6 +190,8 @@ def test_night_filter_and_share():
 
     assert everything[0].total == 20
     assert everything[0].night_share == pytest.approx(0.5)
+    # The fixture is all robbery, which is violent.
+    assert everything[0].serious_count == 20
     assert nights[0].total == 10
     assert nights[0].night_share == pytest.approx(1.0)
 
@@ -254,3 +260,101 @@ def test_large_dataset_stays_under_the_cell_cap():
     assert radius >= SIZE_LADDER[0]
     # Nothing lost: every incident in view is counted somewhere.
     assert sum(c.total for c in cells) == 40_000
+
+
+# ---------------------------------------------------------------------------
+# Severity weighting
+# ---------------------------------------------------------------------------
+
+
+def test_one_robbery_outweighs_many_car_break_ins():
+    """Property crime volume must not drown out a single violent offence.
+
+    This is the whole point of weighting rather than counting: a block with
+    forty car break-ins and one robbery is not more dangerous to walk down
+    than a block with one robbery and nothing else.
+    """
+    incidents = (
+        incidents_at(CENTER_LAT, CENTER_LON, 40, offense="THEFT F/AUTO", shift="DAY")
+        + incidents_at(CENTER_LAT, CENTER_LON, 1, offense="ROBBERY")
+    )
+    index = CrimeIndex.from_incidents(incidents, now=NOW)
+    cells, _ = index.cells(38.895, -77.040, 38.915, -77.020, radius_m=400.0)
+
+    top = cells[0].by_offense[0]
+    assert top.offense == "ROBBERY", (
+        "the breakdown is ordered by count, not by weighted risk"
+    )
+    assert top.share > 0.5
+    assert cells[0].serious_count == 1
+    assert cells[0].total == 41
+
+
+def test_sexual_offences_rank_with_the_most_serious():
+    """Sexual offences must sit at the top of the severity scale."""
+    from getmehome.config import CRIME
+
+    assert CRIME.severity["SEX ABUSE"] == CRIME.severity["HOMICIDE"]
+    assert CRIME.category["SEX ABUSE"] == "sexual"
+    assert "sexual" in CRIME.serious_categories
+
+
+def test_violent_and_property_severity_are_far_apart():
+    """The gap has to be wide enough to actually change routing decisions."""
+    from getmehome.config import CRIME
+
+    violent = ["HOMICIDE", "SEX ABUSE", "ASSAULT W/DANGEROUS WEAPON", "ROBBERY"]
+    property_crime = ["MOTOR VEHICLE THEFT", "THEFT F/AUTO", "THEFT/OTHER", "BURGLARY"]
+
+    def effective(name: str) -> float:
+        return CRIME.severity[name] * CRIME.pedestrian_relevance[name]
+
+    worst_property = max(effective(n) for n in property_crime)
+    least_violent = min(effective(n) for n in violent)
+
+    assert least_violent > worst_property * 8, (
+        f"least violent ({least_violent:.3f}) should dominate worst property "
+        f"({worst_property:.3f}) by a wide margin"
+    )
+
+
+def test_property_crime_still_registers():
+    """Not zero: heavy property crime is a weak signal of low supervision."""
+    from getmehome.config import CRIME
+
+    for name in ("MOTOR VEHICLE THEFT", "THEFT F/AUTO", "THEFT/OTHER"):
+        assert CRIME.severity[name] > 0
+
+
+def test_a_violent_cell_outranks_a_high_volume_property_cell():
+    """End to end: intensity, not just the breakdown, reflects severity."""
+    violent = incidents_at(38.9060, -77.0300, 3, offense="SEX ABUSE")
+    property_crime = incidents_at(
+        38.9000, -77.0300, 60, offense="MOTOR VEHICLE THEFT", shift="DAY"
+    )
+    index = CrimeIndex.from_incidents(violent + property_crime, now=NOW)
+
+    cells, _ = index.cells(38.890, -77.040, 38.915, -77.020, radius_m=200.0)
+    by_total = {c.total: c for c in cells}
+
+    assert by_total[3].intensity > by_total[60].intensity
+    assert by_total[3].serious_count == 3
+    assert by_total[60].serious_count == 0
+
+
+def test_cell_size_floor_prevents_tiny_cells():
+    """Zooming right in must not produce hundreds of tiny polygons."""
+    from getmehome.safety.hexgrid import MAX_CELLS, SIZE_LADDER
+
+    assert min(SIZE_LADDER) >= 110.0
+
+    # A few blocks across, the tightest a user is likely to zoom.
+    radius = choose_radius(38.9000, -77.0350, 38.9060, -77.0270)
+    assert radius >= min(SIZE_LADDER)
+
+    # And a mid-zoom view stays within the render budget.
+    x0, y0 = to_local(38.890, -77.060)
+    x1, y1 = to_local(38.920, -77.010)
+    area = abs(float(x1) - float(x0)) * abs(float(y1) - float(y0))
+    mid = choose_radius(38.890, -77.060, 38.920, -77.010)
+    assert area / (2.598 * mid * mid) <= MAX_CELLS

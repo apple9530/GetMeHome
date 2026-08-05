@@ -32,11 +32,16 @@ from .crime_model import NIGHT_SHIFTS, incident_weight
 
 # Cell circumradius options in metres. Chosen so each step is roughly 1.5x the
 # last — enough of a jump to be visible, not so much that a zoom skips a level.
-SIZE_LADDER = (75.0, 110.0, 165.0, 250.0, 375.0, 560.0, 850.0, 1300.0, 2000.0)
+#
+# The floor is 110m rather than something finer. Smaller cells look appealing
+# zoomed in, but each one is a separate filled overlay on the map and the
+# render cost is what makes the grid stutter — the same mistake, at a smaller
+# scale, as the per-street overlay this replaced.
+SIZE_LADDER = (110.0, 165.0, 250.0, 375.0, 560.0, 850.0, 1300.0, 2000.0)
 
-# Above this the client starts to stutter, which is what the old per-street
-# overlay got wrong.
-MAX_CELLS = 700
+# Hard ceiling on cells per response. Filled map polygons are expensive enough
+# that this, not payload size, is the binding constraint.
+MAX_CELLS = 320
 
 SQRT3 = math.sqrt(3.0)
 
@@ -122,6 +127,19 @@ def hex_vertices(
 
 
 @dataclass
+class OffenseBreakdown:
+    """One offence type's contribution to a cell."""
+
+    offense: str
+    count: int
+    category: str
+    # Share of the cell's weighted intensity, 0-1. This is what makes the list
+    # honest: a cell can be 40 car break-ins and 1 robbery, and the counts
+    # alone would bury the fact that the robbery is most of the risk.
+    share: float
+
+
+@dataclass
 class CrimeCell:
     """One hexagon's worth of aggregated incidents."""
 
@@ -131,9 +149,11 @@ class CrimeCell:
     # Severity-weighted, recency-decayed intensity in [0, 1], normalised
     # against the busiest cell in the response.
     intensity: float
-    # Offence name -> count, most common first.
-    by_offense: list[tuple[str, int]]
+    # Ordered by weighted contribution, not by raw count.
+    by_offense: list[OffenseBreakdown]
     night_count: int
+    # Violent and sexual offences only.
+    serious_count: int
     latest: datetime | None
 
     @property
@@ -158,7 +178,13 @@ class CrimeIndex:
         is_night: np.ndarray,
         timestamps: np.ndarray,
         offenses: list[str],
+        cfg: CrimeConfig = CRIME,
     ) -> None:
+        self.cfg = cfg
+        # Parallel to `offenses`: the broad category of each offence name.
+        self.categories = [
+            cfg.category.get(name, cfg.default_category) for name in offenses
+        ]
         self.lat = lat
         self.lon = lon
         self.weight = weight
@@ -182,7 +208,7 @@ class CrimeIndex:
         if not incidents:
             empty = np.zeros(0)
             return cls(empty, empty, empty, empty.astype(np.int16),
-                       empty.astype(bool), empty, [])
+                       empty.astype(bool), empty, [], cfg)
 
         now = now or datetime.now(incidents[0].reported_at.tzinfo)
         vocab: dict[str, int] = {}
@@ -210,6 +236,7 @@ class CrimeIndex:
                 [i.reported_at.timestamp() for i in incidents], dtype=np.float64
             ),
             offenses=offenses,
+            cfg=cfg,
         )
 
     def cells(
@@ -277,11 +304,35 @@ class CrimeIndex:
             cx, cy = axial_center(cq, cr, radius)
             clat, clon = to_wgs84(cx, cy)
 
-            counts = Counter(self.offense_ids[members].tolist())
-            by_offense = [
-                (self.offenses[oid], int(n))
-                for oid, n in counts.most_common(max_offense_kinds)
-            ]
+            member_offenses = self.offense_ids[members]
+            member_weights = self.weight[members]
+            counts = Counter(member_offenses.tolist())
+
+            # Weighted contribution per offence type, so the list can be
+            # ordered by what actually drives the cell's risk. A cell can be
+            # forty car break-ins and one robbery, and ordering by raw count
+            # would bury the fact that the robbery is most of the risk.
+            contribution = {
+                oid: float(member_weights[member_offenses == oid].sum())
+                for oid in counts
+            }
+            total_weight = sum(contribution.values()) or 1.0
+
+            breakdown = [
+                OffenseBreakdown(
+                    offense=self.offenses[oid],
+                    count=int(counts[oid]),
+                    category=self.categories[oid],
+                    share=round(contribution[oid] / total_weight, 4),
+                )
+                for oid in sorted(counts, key=lambda o: -contribution[o])
+            ][:max_offense_kinds]
+
+            serious = sum(
+                int(counts[oid])
+                for oid in counts
+                if self.categories[oid] in self.cfg.serious_categories
+            )
 
             latest_ts = float(self.timestamps[members].max())
             cells.append(
@@ -290,8 +341,9 @@ class CrimeIndex:
                     center_lon=float(clon),
                     total=int(len(members)),
                     intensity=round(intensity / scale, 4),
-                    by_offense=by_offense,
+                    by_offense=breakdown,
                     night_count=int(self.is_night[members].sum()),
+                    serious_count=serious,
                     latest=datetime.fromtimestamp(latest_ts, tz=UTC),
                 )
             )

@@ -38,6 +38,21 @@ enum Theme {
     }
 
     static let cameraTint = Color(red: 0.55, green: 0.28, blue: 0.75)
+    static let seriousCrimeTint = Color(red: 0.82, green: 0.22, blue: 0.18)
+
+    /// Colour per offence category.
+    ///
+    /// Violent and sexual offences share the same strong red rather than
+    /// getting a hue each: the distinction that matters to someone reading
+    /// this quickly is serious versus not, and giving four categories four
+    /// hues would flatten that into a palette.
+    static func categoryTint(_ category: String) -> Color {
+        switch category {
+        case "violent", "sexual": seriousCrimeTint
+        case "property": Color(red: 0.45, green: 0.52, blue: 0.62)
+        default: Color.secondary
+        }
+    }
     static let routeLine = Color.accentColor
     static let alternateRouteLine = Color.secondary.opacity(0.55)
 

@@ -201,6 +201,12 @@ struct CameraResponse: Codable {
 struct OffenseCount: Codable, Hashable {
     let offense: String
     let count: Int
+    /// "violent" | "sexual" | "property" | "other"
+    let category: String
+    /// Share of the cell's weighted risk, 0-1.
+    let share: Double
+
+    var isSerious: Bool { category == "violent" || category == "sexual" }
 
     /// MPD writes offences in shouting caps; this is the readable form.
     var displayName: String {
@@ -229,6 +235,8 @@ struct CrimeCell: Codable, Hashable, Identifiable {
     /// currently in view.
     let intensity: Double
     let nightShare: Double
+    /// Violent and sexual offences only.
+    let seriousCount: Int
     let byOffense: [OffenseCount]
     let latest: String
 

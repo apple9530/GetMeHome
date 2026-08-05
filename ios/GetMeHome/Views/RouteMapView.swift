@@ -80,7 +80,6 @@ struct RouteMapView: View {
     /// deliberately extends under.
     private var controls: some View {
         VStack(spacing: 10) {
-            MapCompass(scope: mapScope)
             MapUserLocationButton(scope: mapScope)
             MapScaleView(scope: mapScope)
         }
@@ -309,6 +308,11 @@ struct CrimeCellSheet: View {
             }
 
             HStack(spacing: 22) {
+                stat(
+                    "\(cell.seriousCount)",
+                    "Violent or sexual",
+                    tint: cell.seriousCount > 0 ? Theme.seriousCrimeTint : .primary
+                )
                 stat("\(Int(cell.nightShare * 100))%", "At night")
                 if !cell.latest.isEmpty {
                     stat(cell.latest, "Most recent")
@@ -317,40 +321,55 @@ struct CrimeCellSheet: View {
 
             Divider()
 
-            Text("By type")
-                .font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("What drives the risk here")
+                    .font(.subheadline.weight(.semibold))
+                // Without this the ordering looks wrong: a type with a smaller
+                // count can sit above one with a larger count.
+                Text("Ordered by weight, not by how many")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             ScrollView {
-                VStack(spacing: 8) {
+                VStack(spacing: 10) {
                     ForEach(cell.byOffense, id: \.offense) { entry in
-                        HStack {
-                            Text(entry.displayName)
-                                .font(.subheadline)
-                            Spacer()
-                            Text("\(entry.count)")
-                                .font(.subheadline.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                        VStack(spacing: 4) {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(Theme.categoryTint(entry.category))
+                                    .frame(width: 7, height: 7)
+                                Text(entry.displayName)
+                                    .font(.subheadline)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text("\(entry.count)")
+                                    .font(.subheadline.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                Text("\(Int(entry.share * 100))%")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(Theme.categoryTint(entry.category))
+                                    .frame(width: 38, alignment: .trailing)
+                            }
+                            // The bar shows share of risk, not share of count,
+                            // so the picture matches the ordering.
+                            GeometryReader { geometry in
+                                Capsule()
+                                    .fill(Theme.categoryTint(entry.category).opacity(0.85))
+                                    .frame(width: geometry.size.width * CGFloat(entry.share))
+                            }
+                            .frame(height: 4)
                         }
-                        // A bar makes the shape of the mix readable at a glance
-                        // where a column of numbers does not.
-                        GeometryReader { geometry in
-                            Capsule()
-                                .fill(Theme.crimeCellColor(1.0).opacity(0.8))
-                                .frame(
-                                    width: geometry.size.width
-                                        * CGFloat(entry.count)
-                                        / CGFloat(max(1, cell.byOffense.first?.count ?? 1))
-                                )
-                        }
-                        .frame(height: 4)
                     }
                 }
             }
 
             Text(
-                "Reported incidents from MPD over the last three years. "
-                    + "Reporting varies by neighbourhood — this is not a "
-                    + "measure of the people who live here."
+                "Reported incidents from MPD over the last three years, "
+                    + "weighted by how much each offence bears on the safety "
+                    + "of someone walking past. Reporting varies by "
+                    + "neighbourhood — this is not a measure of the people "
+                    + "who live here."
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -359,9 +378,11 @@ struct CrimeCellSheet: View {
         .padding(20)
     }
 
-    private func stat(_ value: String, _ label: String) -> some View {
+    private func stat(
+        _ value: String, _ label: String, tint: Color = .primary
+    ) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(.headline.monospacedDigit())
+            Text(value).font(.headline.monospacedDigit()).foregroundStyle(tint)
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
     }

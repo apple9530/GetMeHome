@@ -128,6 +128,11 @@ class CameraResponse(BaseModel):
 class OffenseCount(BaseModel):
     offense: str
     count: int
+    # "violent" | "sexual" | "property" | "other"
+    category: str = "other"
+    # Share of the cell's weighted risk, 0-1. Ordering by this rather than by
+    # count is what stops a pile of car break-ins burying a single robbery.
+    share: float = 0.0
 
 
 class CrimeCellModel(BaseModel):
@@ -142,6 +147,8 @@ class CrimeCellModel(BaseModel):
     total: int
     intensity: float
     nightShare: float
+    # Violent and sexual offences only.
+    seriousCount: int = 0
     byOffense: list[OffenseCount]
     latest: str = ""
 

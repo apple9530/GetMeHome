@@ -142,20 +142,52 @@ class CrimeConfig:
 
     # Severity in [0, 1] per MPD OFFENSE value. These are the weights that
     # decide how much each crime type moves the risk needle.
+    #
+    # The gap between the violent and property groups is deliberately wide.
+    # A stolen car and a sexual assault are not different points on one scale
+    # of "how bad" — for someone deciding which street to walk down at night
+    # they are barely the same kind of information. Property crime is left
+    # non-zero because a street with a lot of it is usually a street with
+    # little passive supervision, which is a weak but real signal.
     severity: dict[str, float] = field(
         default_factory=lambda: {
+            # Violent and sexual offences.
             "HOMICIDE": 1.00,
-            "SEX ABUSE": 0.95,
-            "ASSAULT W/DANGEROUS WEAPON": 0.80,
-            "ROBBERY": 0.75,
-            "ARSON": 0.35,
-            "BURGLARY": 0.30,
-            "MOTOR VEHICLE THEFT": 0.22,
-            "THEFT F/AUTO": 0.15,
-            "THEFT/OTHER": 0.12,
+            "SEX ABUSE": 1.00,
+            "ASSAULT W/DANGEROUS WEAPON": 0.90,
+            "ROBBERY": 0.85,
+            # Property offences.
+            "ARSON": 0.25,
+            "BURGLARY": 0.15,
+            "MOTOR VEHICLE THEFT": 0.08,
+            "THEFT F/AUTO": 0.05,
+            "THEFT/OTHER": 0.05,
         }
     )
-    default_severity: float = 0.20
+    default_severity: float = 0.15
+
+    # Broad grouping, used to label and order what the map's crime grid shows.
+    # Keeping this separate from the numeric weight means the UI can say
+    # "3 violent" without re-deriving that from a severity threshold.
+    category: dict[str, str] = field(
+        default_factory=lambda: {
+            "HOMICIDE": "violent",
+            "ASSAULT W/DANGEROUS WEAPON": "violent",
+            "ROBBERY": "violent",
+            "SEX ABUSE": "sexual",
+            "ARSON": "property",
+            "BURGLARY": "property",
+            "MOTOR VEHICLE THEFT": "property",
+            "THEFT F/AUTO": "property",
+            "THEFT/OTHER": "property",
+        }
+    )
+    default_category: str = "other"
+
+    @property
+    def serious_categories(self) -> frozenset[str]:
+        """Categories counted as violent for the UI's headline figure."""
+        return frozenset({"violent", "sexual"})
 
     # How much each offence type bears on the safety of someone *walking past*
     # the location. A burglary is serious but is an indoor property crime and

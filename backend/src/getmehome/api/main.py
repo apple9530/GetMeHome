@@ -332,8 +332,15 @@ def crime_grid(
                 total=c.total,
                 intensity=c.intensity,
                 nightShare=round(c.night_share, 3),
+                seriousCount=c.serious_count,
                 byOffense=[
-                    OffenseCount(offense=name, count=n) for name, n in c.by_offense
+                    OffenseCount(
+                        offense=b.offense,
+                        count=b.count,
+                        category=b.category,
+                        share=b.share,
+                    )
+                    for b in c.by_offense
                 ],
                 latest=c.latest.date().isoformat() if c.latest else "",
             )

@@ -8,7 +8,9 @@ struct SearchView: View {
     @Environment(LocationService.self) private var location
 
     @State private var showSettings = false
-    @FocusState private var searchFocused: Bool
+    /// Which field holds the keyboard, if any. Both text fields exist at all
+    /// times so focus always has somewhere to land.
+    @FocusState private var focusedField: RouteField?
 
     var body: some View {
         @Bindable var planner = planner
@@ -32,14 +34,21 @@ struct SearchView: View {
                 permissionNotice
             }
 
-            if !planner.searchResults.isEmpty || planner.isSearching {
+            if focusedField != nil {
                 results
-            } else if planner.searchText.isEmpty {
+            } else {
                 quickToggles
             }
         }
         .padding(.bottom, 12)
         .background(.regularMaterial)
+        .onChange(of: focusedField) { previous, current in
+            if let current {
+                planner.beginEditing(current)
+            } else if let previous {
+                planner.endEditing(previous)
+            }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
@@ -68,18 +77,20 @@ struct SearchView: View {
                 endpointRow(
                     field: .origin,
                     placeholder: "Choose starting point",
-                    point: planner.origin
+                    text: $planner.originText,
+                    icon: planner.origin.symbolName
                 )
                 endpointRow(
                     field: .destination,
                     placeholder: "Where to?",
-                    point: planner.destination
+                    text: $planner.destinationText,
+                    icon: planner.destination?.symbolName ?? "magnifyingglass"
                 )
             }
 
             Button {
+                focusedField = nil
                 planner.swapEndpoints()
-                searchFocused = false
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(.subheadline)
@@ -91,47 +102,38 @@ struct SearchView: View {
         }
     }
 
-    @ViewBuilder
+    /// One endpoint field.
+    ///
+    /// The text field is always present — swapping a `TextField` in only while
+    /// focused deadlocks, because focus cannot be granted to a view that does
+    /// not exist yet.
     private func endpointRow(
-        field: RouteField, placeholder: String, point: RoutePoint?
+        field: RouteField,
+        placeholder: String,
+        text: Binding<String>,
+        icon: String
     ) -> some View {
-        @Bindable var planner = planner
-        let isEditing = planner.editingField == field && searchFocused
+        let isFocused = focusedField == field
 
-        HStack(spacing: 8) {
-            if isEditing {
-                TextField(placeholder, text: $planner.searchText)
-                    .focused($searchFocused)
-                    .submitLabel(.search)
-                    .autocorrectionDisabled()
-            } else {
-                Button {
-                    planner.beginEditing(field)
-                    searchFocused = true
-                } label: {
-                    HStack(spacing: 7) {
-                        if let point {
-                            Image(systemName: point.symbolName)
-                                .font(.caption)
-                                .foregroundStyle(
-                                    point.isCurrentLocation ? Color.accentColor : .secondary
-                                )
-                            Text(point.displayName)
-                                .lineLimit(1)
-                        } else {
-                            Text(placeholder)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
+        return HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .frame(width: 14)
+                .foregroundStyle(
+                    field == .origin && planner.origin.isCurrentLocation
+                        ? Color.accentColor
+                        : .secondary
+                )
 
-            if isEditing, !planner.searchText.isEmpty {
+            TextField(placeholder, text: text)
+                .focused($focusedField, equals: field)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.words)
+
+            if isFocused, !text.wrappedValue.isEmpty {
                 Button {
-                    planner.clearSearch()
+                    planner.clearEditingText()
                 } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
                 }
@@ -144,7 +146,7 @@ struct SearchView: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(isEditing ? Color.accentColor : .clear, lineWidth: 1.5)
+                .strokeBorder(isFocused ? Color.accentColor : .clear, lineWidth: 1.5)
         )
     }
 
@@ -153,18 +155,17 @@ struct SearchView: View {
     private var results: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                // Offering current location as a result makes it reachable for
-                // the destination too, not just as the origin's default.
-                if planner.searchText.isEmpty || planner.isSearching {
-                    resultRow(
-                        icon: "location.fill",
-                        title: "Current location",
-                        subtitle: "Use where I am now",
-                        tint: .accentColor
-                    ) {
-                        searchFocused = false
-                        Task { await planner.useCurrentLocation(for: planner.editingField) }
-                    }
+                // Always offered, so "current location" is reachable for the
+                // destination too and not just as the origin's default.
+                resultRow(
+                    icon: "location.fill",
+                    title: "Current location",
+                    subtitle: "Use where I am now",
+                    tint: .accentColor
+                ) {
+                    let field = planner.editingField
+                    focusedField = nil
+                    Task { await planner.useCurrentLocation(for: field) }
                 }
 
                 ForEach(planner.searchResults) { result in
@@ -174,21 +175,36 @@ struct SearchView: View {
                         subtitle: result.address,
                         tint: .secondary
                     ) {
-                        searchFocused = false
+                        focusedField = nil
                         Task { await planner.select(result) }
                     }
                 }
 
-                if planner.isSearching, planner.searchResults.isEmpty {
-                    HStack {
+                if planner.isSearching {
+                    HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("Searching…").font(.caption).foregroundStyle(.secondary)
                     }
                     .padding()
+                } else if planner.searchResults.isEmpty, currentText.count >= 2 {
+                    Text("No places found for “\(currentText)”")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding()
                 }
             }
         }
         .frame(maxHeight: 260)
+        // Without this, a drag that begins on the list dismisses the keyboard
+        // and the row under the finger disappears before the tap lands.
+        .scrollDismissesKeyboard(.never)
+    }
+
+    private var currentText: String {
+        switch planner.editingField {
+        case .origin: planner.originText
+        case .destination: planner.destinationText
+        }
     }
 
     private func resultRow(

@@ -35,12 +35,23 @@ final class PlannerViewModel {
     var selectedItineraryID: String?
     var selectedCell: CrimeCell?
 
-    var searchText = "" {
-        didSet {
-            guard searchText != oldValue else { return }
-            scheduleSearch()
-        }
+    /// Text bindings for the two fields.
+    ///
+    /// Both are always live rather than one shared box swapped between rows.
+    /// The shared version deadlocked: the text field only existed while
+    /// focused, and focus could not be granted to a field that did not yet
+    /// exist, so neither row could ever be edited.
+    var originText: String = RoutePoint.currentLocation.displayName {
+        didSet { handleTextChange(.origin, from: oldValue, to: originText) }
     }
+
+    var destinationText: String = "" {
+        didSet { handleTextChange(.destination, from: oldValue, to: destinationText) }
+    }
+
+    /// Suppresses the search that a `didSet` would otherwise fire when we set
+    /// the text ourselves after a selection.
+    private var isApplyingSelection = false
 
     var selectedItinerary: Itinerary? {
         itineraries.first { $0.id == selectedItineraryID } ?? itineraries.first
@@ -71,17 +82,49 @@ final class PlannerViewModel {
 
     // MARK: - Editing the endpoints
 
+    /// Called when a field gains focus.
+    ///
+    /// Clears an already-committed value so that typing replaces it rather
+    /// than appending to it — tapping a field that reads "Union Station" and
+    /// typing should start a new search, not edit those characters.
     func beginEditing(_ field: RouteField) {
         editingField = field
-        searchTask?.cancel()
-        searchText = ""
         searchResults = []
+        searchTask?.cancel()
+
+        let hasCommittedValue = (field == .origin) ? true : destination != nil
+        if hasCommittedValue {
+            withoutSearching {
+                switch field {
+                case .origin: originText = ""
+                case .destination: destinationText = ""
+                }
+            }
+        }
+    }
+
+    /// Called when a field loses focus without a selection being made.
+    func endEditing(_ field: RouteField) {
+        searchTask?.cancel()
+        searchResults = []
+        isSearching = false
+        // Put back whatever was committed, so an abandoned edit does not leave
+        // the field looking empty when a route is still set.
+        withoutSearching {
+            switch field {
+            case .origin:
+                originText = origin.displayName
+            case .destination:
+                destinationText = destination?.displayName ?? ""
+            }
+        }
     }
 
     func swapEndpoints() {
         let previousOrigin = origin
         origin = destination ?? .currentLocation
         destination = previousOrigin
+        syncFieldText()
         Task { await requestRoutes() }
     }
 
@@ -95,6 +138,7 @@ final class PlannerViewModel {
             selectedItineraryID = nil
             phase = .idle
         }
+        syncFieldText()
     }
 
     /// Apply a search result to whichever field is being edited.
@@ -102,16 +146,18 @@ final class PlannerViewModel {
         switch editingField {
         case .origin:
             origin = .place(result)
-            // Picking a start with no end yet is a natural point to move on.
-            if destination == nil {
-                editingField = .destination
-                clearSearch()
-                return
-            }
         case .destination:
             destination = .place(result)
         }
+        syncFieldText()
         clearSearch()
+
+        // Picking a start with no end yet is a natural point to move on
+        // rather than to route.
+        if editingField == .origin, destination == nil {
+            editingField = .destination
+            return
+        }
         await requestRoutes()
     }
 
@@ -120,8 +166,34 @@ final class PlannerViewModel {
         case .origin: origin = .currentLocation
         case .destination: destination = .currentLocation
         }
+        syncFieldText()
         clearSearch()
+
+        if field == .origin, destination == nil {
+            editingField = .destination
+            return
+        }
         await requestRoutes()
+    }
+
+    /// Bring both text fields back in line with the committed endpoints.
+    private func syncFieldText() {
+        withoutSearching {
+            originText = origin.displayName
+            destinationText = destination?.displayName ?? ""
+        }
+    }
+
+    private func withoutSearching(_ body: () -> Void) {
+        isApplyingSelection = true
+        body()
+        isApplyingSelection = false
+    }
+
+    private func handleTextChange(_ field: RouteField, from old: String, to new: String) {
+        guard !isApplyingSelection, new != old else { return }
+        editingField = field
+        scheduleSearch(new)
     }
 
     /// Name a dropped pin so the endpoint card is not just coordinates.
@@ -142,9 +214,9 @@ final class PlannerViewModel {
 
     // MARK: - Search
 
-    private func scheduleSearch() {
+    private func scheduleSearch(_ text: String) {
         searchTask?.cancel()
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.count >= 2 else {
             searchResults = []
             isSearching = false
@@ -174,9 +246,21 @@ final class PlannerViewModel {
 
     func clearSearch() {
         searchTask?.cancel()
-        searchText = ""
         searchResults = []
         isSearching = false
+    }
+
+    /// Empty the field being edited, for the clear button.
+    func clearEditingText() {
+        searchTask?.cancel()
+        searchResults = []
+        isSearching = false
+        withoutSearching {
+            switch editingField {
+            case .origin: originText = ""
+            case .destination: destinationText = ""
+            }
+        }
     }
 
     // MARK: - Routing
@@ -241,6 +325,7 @@ final class PlannerViewModel {
         selectedItineraryID = nil
         editingField = .destination
         phase = .idle
+        syncFieldText()
     }
 
     func beginNavigation() {
