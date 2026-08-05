@@ -251,7 +251,16 @@ def route(request: RouteRequest) -> RouteResponse:
 
     if request.avoidCameras and not state.cameras:
         notices.append(
-            "No ALPR camera data is loaded, so camera avoidance had no effect."
+            "No camera data is loaded, so camera avoidance had no effect."
+        )
+
+    # Lighting is the biggest term in the night model, so silently scoring a
+    # night route with no lamp data would produce numbers that look fine and
+    # mean much less than they appear to.
+    if night and not state.graph.meta.get("n_lights"):
+        notices.append(
+            "No streetlight data is loaded, so lighting is not affecting "
+            "these scores. Rebuild the graph to include it."
         )
 
     return RouteResponse(

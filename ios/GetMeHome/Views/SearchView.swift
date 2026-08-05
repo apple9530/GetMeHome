@@ -328,6 +328,23 @@ struct SettingsView: View {
 
         NavigationStack {
             Form {
+                Section {
+                    Picker("Score journey for", selection: $settings.timeOfDay) {
+                        ForEach(TimeOfDay.allCases) { option in
+                            Label(option.label, systemImage: option.symbolName)
+                                .tag(option)
+                        }
+                    }
+                } header: {
+                    Text("Time of day")
+                } footer: {
+                    Text(
+                        "Auto follows the sun where you are. Street lighting "
+                            + "only counts towards a score at night, so force "
+                            + "Night to plan a walk home this evening."
+                    )
+                }
+
                 Section("Routing") {
                     Toggle("Include public transport", isOn: $settings.includeTransit)
                     Toggle("Avoid Flock Cameras", isOn: $settings.avoidCameras)

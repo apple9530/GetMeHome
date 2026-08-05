@@ -48,8 +48,8 @@ struct RouteOptionsView: View {
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
                 HStack(spacing: 5) {
                     Text(planner.origin.displayName)
                         .lineLimit(1)
@@ -60,31 +60,63 @@ struct RouteOptionsView: View {
                         .lineLimit(1)
                 }
                 .font(.headline)
-                HStack(spacing: 5) {
-                    Image(systemName: planner.isNight ? "moon.stars.fill" : "sun.max.fill")
-                        .font(.caption2)
-                    Text(
-                        planner.isNight
-                            ? "Scored for night — lighting counts"
-                            : "Scored for daytime"
-                    )
-                    .font(.caption)
+
+                Spacer()
+
+                Button {
+                    onCancel()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
                 }
-                .foregroundStyle(.secondary)
+                .accessibilityLabel("Cancel route")
             }
-            Spacer()
-            Button {
-                onCancel()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityLabel("Cancel route")
+
+            timeOfDayControl
         }
         .padding(.horizontal)
         .padding(.top, 14)
         .padding(.bottom, 10)
+    }
+
+    /// Day / night scoring, with Auto following the sun.
+    ///
+    /// Exposed here rather than buried in Settings because it changes what the
+    /// safety scores *mean* — lighting carries no weight in daylight, so a
+    /// route planned at noon shows no streetlight information at all until you
+    /// switch it. Planning tonight's walk home at 3pm is the normal case, not
+    /// an edge case.
+    private var timeOfDayControl: some View {
+        @Bindable var settings = settings
+
+        return VStack(alignment: .leading, spacing: 5) {
+            Picker("Scored for", selection: $settings.timeOfDay) {
+                ForEach(TimeOfDay.allCases) { option in
+                    Label(option.label, systemImage: option.symbolName)
+                        .tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: settings.timeOfDay) { _, _ in
+                Task { await planner.rescoreForTimeOfDay() }
+            }
+
+            HStack(spacing: 5) {
+                Image(systemName: planner.isNight ? "moon.stars.fill" : "sun.max.fill")
+                    .font(.caption2)
+                Text(scoringDescription)
+                    .font(.caption)
+            }
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var scoringDescription: String {
+        let auto = settings.timeOfDay == .auto ? "Auto · " : ""
+        return planner.isNight
+            ? "\(auto)scored for night — street lighting counts"
+            : "\(auto)scored for daytime — lighting isn't a factor"
     }
 
     private var startButton: some View {

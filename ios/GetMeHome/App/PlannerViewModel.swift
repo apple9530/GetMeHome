@@ -280,7 +280,8 @@ final class PlannerViewModel {
                 to: end,
                 destinationName: destinationName,
                 modes: settings.modes,
-                avoidCameras: settings.avoidCameras
+                avoidCameras: settings.avoidCameras,
+                forceNight: settings.timeOfDay.forceNight
             )
 
             itineraries = response.itineraries
@@ -314,6 +315,14 @@ final class PlannerViewModel {
 
     func refreshRoutes() async {
         guard destination != nil, phase == .showingOptions else { return }
+        await requestRoutes()
+    }
+
+    /// Re-score for a different time of day. Unlike `refreshRoutes` this also
+    /// fires while a request is in flight, since the user has just changed the
+    /// question being asked.
+    func rescoreForTimeOfDay() async {
+        guard destination != nil else { return }
         await requestRoutes()
     }
 
