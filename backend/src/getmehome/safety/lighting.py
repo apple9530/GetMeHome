@@ -130,11 +130,11 @@ def score_segments(
 
     if lights:
         lx, ly = to_local(
-            np.array([l.lat for l in lights]), np.array([l.lon for l in lights])
+            np.array([lamp.lat for lamp in lights]), np.array([lamp.lon for lamp in lights])
         )
         tree = cKDTree(np.column_stack([lx, ly]))
-        lumens = np.array([l.lumens for l in lights], dtype=np.float64)
-        heights = np.array([l.height_m for l in lights], dtype=np.float64)
+        lumens = np.array([lamp.lumens for lamp in lights], dtype=np.float64)
+        heights = np.array([lamp.height_m for lamp in lights], dtype=np.float64)
     else:
         tree, lumens, heights = None, np.zeros(0), np.zeros(0)
 

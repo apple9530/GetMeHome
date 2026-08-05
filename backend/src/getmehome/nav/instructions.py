@@ -168,8 +168,8 @@ def build_steps(
     prev_group_exit: float | None = None
 
     for gi, group in enumerate(groups):
-        seg_ids = [int(graph.edge_seg[l.edge_id]) for l in group]
-        distance = sum(graph.edge_length(l.edge_id) * l.fraction for l in group)
+        seg_ids = [int(graph.edge_seg[leg.edge_id]) for leg in group]
+        distance = sum(graph.edge_length(leg.edge_id) * leg.fraction for leg in group)
         duration = distance / 1.35
 
         first_coords = graph.edge_coords(group[0].edge_id)

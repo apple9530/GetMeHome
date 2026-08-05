@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import numpy as np
@@ -192,9 +192,9 @@ def route(request: RouteRequest) -> RouteResponse:
     state = _require_state()
     notices: list[str] = []
 
-    when = request.departAt or datetime.now(timezone.utc)
+    when = request.departAt or datetime.now(UTC)
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
 
     night = (
         request.forceNight
@@ -247,7 +247,7 @@ def route(request: RouteRequest) -> RouteResponse:
     return RouteResponse(
         itineraries=[_serialise(it, i) for i, it in enumerate(itineraries)],
         isNight=night,
-        generatedAt=datetime.now(timezone.utc),
+        generatedAt=datetime.now(UTC),
         notices=notices,
     )
 
@@ -298,7 +298,7 @@ def safety_overlay(
         night
         if night is not None
         else compute_is_night(
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             (minLat + maxLat) / 2,
             (minLon + maxLon) / 2,
         )

@@ -22,13 +22,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..config import ROUTING, TRANSIT
-from ..graph.model import WalkGraph
 from ..ingest.gtfs import TransitNetwork
 from ..nav.instructions import NavStep, build_steps
 from ..safety.cameras import AlprCamera, coverage_along_route
 from ..safety.scoring import SafetyBreakdown, score_route
-from .alternatives import RouteOption, compute_options
-from .astar import GraphIndex, PathResult, SnapPoint, one_to_many, shortest_path
+from .alternatives import compute_options
+from .astar import GraphIndex, SnapPoint, one_to_many, shortest_path
 from .raptor import AccessPoint, Journey, run_raptor
 
 # Walking legs shorter than this are dropped. A stop can snap to essentially
@@ -159,7 +158,7 @@ def _walk_leg(
         duration_s=path.duration_s,
         coords=path.coords,
         steps=build_steps(graph, path.legs, is_night, destination_name),
-        safety=score_route(graph, [l.edge_id for l in path.legs], is_night),
+        safety=score_route(graph, [leg.edge_id for leg in path.legs], is_night),
     )
 
 
@@ -171,17 +170,19 @@ def _combine_safety(legs: list[ItineraryLeg]) -> SafetyBreakdown:
     over a genuinely bad walk at the far end — which is exactly the walk the
     user needs warning about.
     """
-    walks = [l for l in legs if l.mode == "walk" and l.safety is not None]
+    walks = [leg for leg in legs if leg.mode == "walk" and leg.safety is not None]
     if not walks:
         return SafetyBreakdown(100, 100, 100, 100, 100, 0, 0, "")
 
-    total = sum(l.distance_m for l in walks) or 1.0
-    w = [l.distance_m / total for l in walks]
+    total = sum(leg.distance_m for leg in walks) or 1.0
+    w = [leg.distance_m / total for leg in walks]
 
     def blend(attr: str) -> int:
-        return int(round(sum(wi * getattr(l.safety, attr) for wi, l in zip(w, walks))))
+        return int(
+            round(sum(wi * getattr(leg.safety, attr) for wi, leg in zip(w, walks, strict=True)))
+        )
 
-    worst = max(walks, key=lambda l: l.safety.worst_stretch_risk).safety
+    worst = max(walks, key=lambda leg: leg.safety.worst_stretch_risk).safety
     return SafetyBreakdown(
         overall=blend("overall"),
         lighting=blend("lighting"),
@@ -274,17 +275,17 @@ def build_transit_itinerary(
     if egress.distance_m >= MIN_WALK_LEG_M:
         legs.append(egress)
 
-    walk_distance = sum(l.distance_m for l in legs if l.mode == "walk")
+    walk_distance = sum(leg.distance_m for leg in legs if leg.mode == "walk")
     walk_before = sum(
-        l.duration_s for l in legs[: _first_transit_index(legs)] if l.mode == "walk"
+        leg.duration_s for leg in legs[: _first_transit_index(legs)] if leg.mode == "walk"
     )
     depart = int(journey.departure_s - walk_before)
     arrive = int(
         journey.arrival_s
-        + sum(l.duration_s for l in legs[_last_transit_index(legs) + 1 :])
+        + sum(leg.duration_s for leg in legs[_last_transit_index(legs) + 1 :])
     )
 
-    all_coords = [c for l in legs for c in l.coords]
+    all_coords = [c for leg in legs for c in leg.coords]
     return Itinerary(
         kind="transit",
         label=label,
@@ -301,8 +302,8 @@ def build_transit_itinerary(
 
 
 def _first_transit_index(legs: list[ItineraryLeg]) -> int:
-    for i, l in enumerate(legs):
-        if l.mode not in ("walk", "transfer"):
+    for i, leg in enumerate(legs):
+        if leg.mode not in ("walk", "transfer"):
             return i
     return len(legs)
 

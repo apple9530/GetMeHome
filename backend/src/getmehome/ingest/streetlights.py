@@ -95,8 +95,13 @@ def save_streetlights(lights: list[StreetLight], path: Path) -> None:
     path.write_text(
         json.dumps(
             [
-                {"lat": l.lat, "lon": l.lon, "lm": round(l.lumens), "h": round(l.height_m, 1)}
-                for l in lights
+                {
+                    "lat": lamp.lat,
+                    "lon": lamp.lon,
+                    "lm": round(lamp.lumens),
+                    "h": round(lamp.height_m, 1),
+                }
+                for lamp in lights
             ]
         )
     )

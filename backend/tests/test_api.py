@@ -47,8 +47,8 @@ def client():
 
 def _route_body(**overrides):
     body = {
-        "origin": dict(zip(("lat", "lon"), grid_coords(0, 0))),
-        "destination": dict(zip(("lat", "lon"), grid_coords(6, 6))),
+        "origin": dict(zip(("lat", "lon"), grid_coords(0, 0), strict=True)),
+        "destination": dict(zip(("lat", "lon"), grid_coords(6, 6), strict=True)),
         "destinationName": "the far corner",
         "modes": ["walk"],
         "forceNight": True,

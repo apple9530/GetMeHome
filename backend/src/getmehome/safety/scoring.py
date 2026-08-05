@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from ..config import RISK
 from ..graph.model import WalkGraph
-from .cameras import AlprCamera, score_segments as score_cameras
+from .cameras import AlprCamera
+from .cameras import score_segments as score_cameras
 from .crime_model import CrimeIncident, CrimeSurface
-from .lighting import StreetLight, score_segments as score_lighting
+from .lighting import StreetLight
+from .lighting import score_segments as score_lighting
 
 
 def apply_scores(

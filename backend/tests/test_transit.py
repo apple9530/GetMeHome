@@ -155,7 +155,7 @@ def test_raptor_finds_transfer(network):
     assert journeys, "should find a transferring journey"
     best = min(journeys, key=lambda j: j.arrival_s)
     assert best.n_transfers >= 1
-    modes = [l.mode for l in best.legs if l.kind == "transit"]
+    modes = [leg.mode for leg in best.legs if leg.kind == "transit"]
     assert "bus" in modes and "metro" in modes
 
 
@@ -285,7 +285,7 @@ def test_transit_itinerary_has_ordered_legs(network):
                 assert leg.distance_m >= 8.0
                 assert len(leg.coords) >= 2
         # Transit legs must be time-ordered.
-        rides = [l for l in it.legs if l.mode not in ("walk", "transfer")]
-        for a, b in zip(rides, rides[1:]):
+        rides = [leg for leg in it.legs if leg.mode not in ("walk", "transfer")]
+        for a, b in zip(rides, rides[1:], strict=False):
             assert a.arrival_s <= b.departure_s
         assert it.arrival_s > it.departure_s

@@ -108,7 +108,7 @@ def test_path_geometry_is_continuous(grid, index):
 
     assert path is not None
     assert len(path.coords) >= 2
-    for a, b in zip(path.coords, path.coords[1:]):
+    for a, b in zip(path.coords, path.coords[1:], strict=False):
         assert haversine_m(*a, *b) < 150.0
 
     # The polyline length should match the reported distance.
@@ -187,8 +187,8 @@ def test_risk_aversion_changes_the_route(grid):
 
     from getmehome.safety.scoring import score_route
 
-    fast_score = score_route(grid, [l.edge_id for l in fast.legs], True)
-    safe_score = score_route(grid, [l.edge_id for l in safe.legs], True)
+    fast_score = score_route(grid, [leg.edge_id for leg in fast.legs], True)
+    safe_score = score_route(grid, [leg.edge_id for leg in safe.legs], True)
 
     assert safe_score.overall > fast_score.overall, (
         f"safest route ({safe_score.overall}) should beat fastest "
@@ -215,7 +215,7 @@ def test_lighting_influences_night_routing(grid):
 
     night_costs, times = grid.edge_costs(True, ROUTING.lambda_safest)
     path = shortest_path(index, start, end, night_costs.tolist(), times.tolist())
-    score = score_route(grid, [l.edge_id for l in path.legs], True)
+    score = score_route(grid, [leg.edge_id for leg in path.legs], True)
 
     # Straight up the lit column: high lighting score and no detour.
     assert score.lighting > 50
@@ -259,10 +259,10 @@ def test_camera_avoidance_diverts_route(grid):
     p2 = shortest_path(index, start, end, avoid.tolist(), times.tolist())
 
     exposure_1 = max(
-        float(grid.seg_camera[grid.edge_seg[l.edge_id]]) for l in p1.legs
+        float(grid.seg_camera[grid.edge_seg[leg.edge_id]]) for leg in p1.legs
     )
     exposure_2 = max(
-        float(grid.seg_camera[grid.edge_seg[l.edge_id]]) for l in p2.legs
+        float(grid.seg_camera[grid.edge_seg[leg.edge_id]]) for leg in p2.legs
     )
     assert exposure_2 <= exposure_1
 

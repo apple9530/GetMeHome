@@ -28,14 +28,13 @@ crowdsourced and incomplete. A segment scoring zero means no camera has been
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.spatial import cKDTree
 
 from ..config import CAMERAS, CameraConfig
-from ..geo import angle_difference, sample_polyline, to_local
+from ..geo import sample_polyline, to_local
 
 _MAX_NEIGHBOURS = 8
 

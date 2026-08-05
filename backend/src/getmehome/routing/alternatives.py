@@ -15,8 +15,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import numpy as np
-
 from ..config import ROUTING
 from ..graph.model import WalkGraph
 from ..safety.cameras import AlprCamera, coverage_along_route
@@ -122,6 +120,8 @@ def compute_options(
             capped.append((kind, path))
 
     # Collapse near-duplicates, keeping the safer of any pair.
+    # Safest first, so when two options collapse the one that survives is the
+    # safer geometry and the label records that it is also the fastest.
     ordered = sorted(
         capped, key=lambda kp: {"safest": 0, "balanced": 1, "fastest": 2}[kp[0]]
     )
@@ -140,9 +140,9 @@ def compute_options(
             merged_kinds[dup_of].append(kind)
 
     options: list[RouteOption] = []
-    for i, (kind, path) in enumerate(kept):
+    for i, (_, path) in enumerate(kept):
         kinds = merged_kinds[i]
-        safety = score_route(graph, [l.edge_id for l in path.legs], is_night)
+        safety = score_route(graph, [leg.edge_id for leg in path.legs], is_night)
         label = _merged_label(kinds)
         options.append(
             RouteOption(
@@ -160,20 +160,17 @@ def compute_options(
     # Order as the user reads them: quickest first, safest last.
     options.sort(key=lambda o: o.path.duration_s)
 
-    best_safety = max(o.safety.overall for o in options)
-    fastest_s = min(o.path.duration_s for o in options)
+    # Every summary is phrased relative to the fastest option, so it reads as
+    # "what does choosing this one cost me" rather than as an isolated number.
+    baseline = options[0]
     for o in options:
         o.summary = describe_tradeoff(
-            fastest_s, o.path.duration_s, o.safety.overall - _safety_of_fastest(options)
+            baseline.path.duration_s,
+            o.path.duration_s,
+            o.safety.overall - baseline.safety.overall,
         )
-        if o.safety.overall == best_safety and len(options) > 1:
-            o.summary = o.summary  # already reflects the delta
 
     return options
-
-
-def _safety_of_fastest(options: list[RouteOption]) -> int:
-    return min(options, key=lambda o: o.path.duration_s).safety.overall
 
 
 def _merged_label(kinds: list[str]) -> str:

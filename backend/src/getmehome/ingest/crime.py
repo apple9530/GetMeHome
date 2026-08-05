@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..config import CRIME, MPD_CRIME_SERVICE_URL
@@ -43,7 +43,7 @@ def parse_timestamp(value) -> datetime | None:
         # treated as such so a schema change does not silently yield 1970.
         seconds = value / 1000.0 if value > 1e11 else float(value)
         try:
-            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+            return datetime.fromtimestamp(seconds, tz=UTC)
         except (OverflowError, OSError, ValueError):
             return None
 
@@ -58,7 +58,7 @@ def parse_timestamp(value) -> datetime | None:
                 if fmt is None
                 else datetime.strptime(text, fmt)
             )
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
         except ValueError:
             continue
     return None
@@ -70,7 +70,7 @@ def fetch_crime(
     limit: int | None = None,
 ) -> list[CrimeIncident]:
     """Download the last ``years`` calendar years of incidents."""
-    current_year = datetime.now(timezone.utc).year
+    current_year = datetime.now(UTC).year
     wanted_years = {str(y) for y in range(current_year - years + 1, current_year + 1)}
 
     incidents: list[CrimeIncident] = []
@@ -97,7 +97,7 @@ def fetch_crime(
         if not targets:
             raise RuntimeError(
                 f"no crime layers for {sorted(wanted_years)} at {service_url}; "
-                f"available: {[l.get('name') for l in layers]}"
+                f"available: {[layer.get('name') for layer in layers]}"
             )
 
         for layer in targets:

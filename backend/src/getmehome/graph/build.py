@@ -12,7 +12,7 @@ import json
 import logging
 import pickle
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -143,7 +143,7 @@ def build(
         node_coords,
         segments,
         meta={
-            "built_at": datetime.now(timezone.utc).isoformat(),
+            "built_at": datetime.now(UTC).isoformat(),
             "n_lights": len(lights),
             "n_incidents": len(incidents),
             "n_cameras": len(cameras),
@@ -221,7 +221,7 @@ def _merge_networks(networks: list):
 
     patterns = []
     stop_patterns: dict[int, list[tuple[int, int]]] = {}
-    for net, mapping in zip(networks, remap):
+    for net, mapping in zip(networks, remap, strict=True):
         for p in net.patterns:
             p.pattern_id = len(patterns)
             p.stops = [mapping[s] for s in p.stops]

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..config import ISOLATION, RISK, ROUTING, CAMERAS
+from ..config import CAMERAS, ISOLATION, RISK, ROUTING
 
 
 @dataclass
@@ -187,7 +187,7 @@ class WalkGraph:
         )
 
     @classmethod
-    def load(cls, path: Path, meta_path: Path | None = None) -> "WalkGraph":
+    def load(cls, path: Path, meta_path: Path | None = None) -> WalkGraph:
         z = np.load(path, allow_pickle=False)
         meta_path = meta_path or path.with_name(path.stem + "_meta.json")
         sidecar = json.loads(Path(meta_path).read_text())
@@ -331,7 +331,6 @@ def build_graph(
         e_rev.extend([False, True])
 
     n_nodes = len(used)
-    n_edges = len(e_from)
     edge_from = np.array(e_from, dtype=np.int32)
 
     # Build CSR adjacency by counting sort on the source node.

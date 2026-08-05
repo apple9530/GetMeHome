@@ -179,23 +179,23 @@ def run_raptor(
         for s in list(marked):
             base_actual = actual[k][s]
             base_label = label[k][s]
-            for t, seconds in network.transfers.get(s, ()):  # noqa: E741
+            for target, seconds in network.transfers.get(s, ()):
                 arrive = base_actual + seconds
                 lab = base_label + seconds * (
-                    1.0 + (risk[t] if apply_penalties else 0.0)
+                    1.0 + (risk[target] if apply_penalties else 0.0)
                 )
-                if lab < best_label[t] and lab < label[k][t]:
-                    actual[k][t] = arrive
-                    label[k][t] = lab
-                    best_label[t] = lab
-                    parent[k][t] = TransitLeg(
+                if lab < best_label[target] and lab < label[k][target]:
+                    actual[k][target] = arrive
+                    label[k][target] = lab
+                    best_label[target] = lab
+                    parent[k][target] = TransitLeg(
                         kind="transfer",
                         from_stop=s,
-                        to_stop=t,
+                        to_stop=target,
                         departure_s=int(base_actual),
                         arrival_s=int(arrive),
                     )
-                    marked.add(t)
+                    marked.add(target)
 
         if not marked:
             break
@@ -267,7 +267,7 @@ def _extract_best(
     if not legs:
         return None
 
-    transit_legs = [l for l in legs if l.kind == "transit"]
+    transit_legs = [leg for leg in legs if leg.kind == "transit"]
     if not transit_legs:
         return None
 

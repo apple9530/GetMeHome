@@ -16,7 +16,7 @@ import io
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
 
 # GTFS route_type -> the mode name we show in the UI.
@@ -286,9 +286,10 @@ def _build_transfers(
     neighbours otherwise — WMATA's rail feed declares platform links but bus
     stops on opposite corners of an intersection usually have none.
     """
-    from ..geo import to_local
     import numpy as np
     from scipy.spatial import cKDTree
+
+    from ..geo import to_local
 
     transfers: dict[int, set[tuple[int, int]]] = defaultdict(set)
 

@@ -13,7 +13,7 @@ minute for civil-twilight purposes.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .config import ROUTING
 
@@ -25,8 +25,8 @@ CIVIL_TWILIGHT_ELEVATION = -6.0
 def solar_elevation(when: datetime, lat: float, lon: float) -> float:
     """Sun elevation above the horizon, in degrees."""
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    utc = when.astimezone(timezone.utc)
+        when = when.replace(tzinfo=UTC)
+    utc = when.astimezone(UTC)
 
     # Julian day.
     a = (14 - utc.month) // 12

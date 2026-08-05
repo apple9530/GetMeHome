@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 from scipy import ndimage
@@ -77,7 +77,7 @@ class CrimeSurface:
         cell_size_m: float | None = None,
     ) -> None:
         self.cfg = cfg
-        self.now = now or datetime.now(timezone.utc)
+        self.now = now or datetime.now(UTC)
         self.cell_size = cell_size_m or max(10.0, cfg.kernel_bandwidth_m / 6.0)
 
         if not incidents:

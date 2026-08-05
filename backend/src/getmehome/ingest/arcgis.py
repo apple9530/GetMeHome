@@ -14,7 +14,7 @@ endpoints. Two things about them shape this client:
 from __future__ import annotations
 
 import time
-from typing import Iterator
+from collections.abc import Iterator
 
 import httpx
 
@@ -37,7 +37,7 @@ class ArcGisClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "ArcGisClient":
+    def __enter__(self) -> ArcGisClient:
         return self
 
     def __exit__(self, *exc) -> None:

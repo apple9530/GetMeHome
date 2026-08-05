@@ -1,0 +1,95 @@
+# XcodeGen spec. Generate the project with:
+#     brew install xcodegen && cd ios && xcodegen generate
+#
+# Regenerating is safe: everything meaningful lives here rather than in the
+# .xcodeproj, so the generated project is disposable and git-ignored.
+
+name: GetMeHome
+options:
+  bundleIdPrefix: com.getmehome
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""          # set your team here, or in Xcode's Signing tab
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # `minimal` rather than `complete`: the app is written to be
+    # main-actor-clean, but strict checking surfaces a lot of noise from SDK
+    # conformances (CLLocationManagerDelegate especially). Raise it once the
+    # project builds if you want the extra checking.
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+targets:
+  GetMeHome:
+    type: application
+    platform: iOS
+    sources:
+      - path: GetMeHome
+    info:
+      path: GetMeHome/Info.plist
+      properties:
+        CFBundleDisplayName: GetMeHome
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiredDeviceCapabilities:
+          - armv7
+          - location-services
+          - gps
+
+        # Location. The "when in use" string is what appears on the first
+        # prompt; "always" is only reached if the user upgrades the grant.
+        NSLocationWhenInUseUsageDescription: >-
+          GetMeHome uses your location to plan safe routes from where you are
+          and to guide you turn by turn.
+        NSLocationAlwaysAndWhenInUseUsageDescription: >-
+          GetMeHome keeps guiding you with the screen off so you don't have to
+          hold your phone out while walking at night.
+
+        # Required for guidance to continue with the screen locked.
+        UIBackgroundModes:
+          - location
+          - audio
+
+        # The default server is plaintext HTTP on localhost for development.
+        # Ship against HTTPS and delete this exception before release.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.getmehome.app
+        INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleDefault
+
+  GetMeHomeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: GetMeHomeTests
+    dependencies:
+      - target: GetMeHome
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.getmehome.app.tests
+
+schemes:
+  GetMeHome:
+    build:
+      targets:
+        GetMeHome: all
+        GetMeHomeTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - GetMeHomeTests

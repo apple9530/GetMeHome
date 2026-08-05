@@ -346,7 +346,7 @@ def shortest_path(
     legs.reverse()
 
     distance = sum(
-        graph.edge_length(l.edge_id) * l.fraction for l in legs
+        graph.edge_length(leg.edge_id) * leg.fraction for leg in legs
     )
     return PathResult(
         legs=legs,
@@ -374,7 +374,6 @@ def one_to_many(
     weighting, walking seconds does not, so the caller can recover the risk
     surcharge as the difference.
     """
-    graph = index.graph
     adj_ptr = index.adj_ptr
     adj_edges = index.adj_edges
     edge_to = index.edge_to

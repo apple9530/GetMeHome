@@ -8,7 +8,7 @@ hand.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from getmehome.geo import polyline_length_m
 from getmehome.graph.model import RawSegment, build_graph
@@ -101,7 +101,7 @@ def dense_lights_along_column(col: int, rows: int = 7, cols: int = 7):
 def crime_cluster_at(row: int, col: int, count: int = 40, offense: str = "ROBBERY"):
     """A cluster of incidents centred on one grid node."""
     lat, lon = grid_coords(row, col)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     out: list[CrimeIncident] = []
     for i in range(count):
         out.append(
