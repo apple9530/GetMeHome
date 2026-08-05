@@ -108,7 +108,7 @@ def test_direction_parsing():
 
 
 def test_excluded_ways_are_absent(parsed):
-    _, segments, _ = parsed
+    _, segments, _, _ = parsed
     names = {s.name for s in segments}
     assert "I-395" not in names, "motorway must be excluded"
     highways = {s.highway for s in segments}
@@ -117,7 +117,7 @@ def test_excluded_ways_are_absent(parsed):
 
 def test_ways_split_at_junctions(parsed):
     """K St crosses the path at node 3, so it must become two segments."""
-    _, segments, _ = parsed
+    _, segments, _, _ = parsed
     k_st = [s for s in segments if s.name == "K St NW"]
     assert len(k_st) == 2
 
@@ -135,7 +135,7 @@ def test_ways_split_at_junctions(parsed):
 
 
 def test_segment_tags_and_lengths(parsed):
-    _, segments, _ = parsed
+    _, segments, _, _ = parsed
     for s in segments:
         assert s.length_m > 0
         assert s.node_a != s.node_b
@@ -146,7 +146,7 @@ def test_segment_tags_and_lengths(parsed):
 
 
 def test_cameras_extracted(parsed):
-    _, _, cameras = parsed
+    _, _, cameras, _ = parsed
     assert len(cameras) == 2, "the plain CCTV node must not be included"
 
     directed = [c for c in cameras if c.direction_deg is not None]
@@ -162,7 +162,7 @@ def test_graph_builds_from_parsed_osm(parsed):
     from getmehome.graph.model import build_graph
     from getmehome.routing.astar import GraphIndex
 
-    node_coords, segments, _ = parsed
+    node_coords, segments, _, _ = parsed
     graph = build_graph(node_coords, segments)
 
     assert graph.n_segments == 4  # K St x2 + Park Path x2
@@ -185,7 +185,7 @@ def test_isolation_reflects_tags(parsed):
     """An unpaved park path must score as more isolated than a lit street."""
     from getmehome.graph.model import build_graph
 
-    node_coords, segments, _ = parsed
+    node_coords, segments, _, _ = parsed
     graph = build_graph(node_coords, segments)
 
     by_name = {}
@@ -203,6 +203,39 @@ def test_bbox_filtering(tmp_path):
     path = tmp_path / "sample.osm"
     path.write_text(OSM_XML)
     tiny = BBox(min_lat=0.0, min_lon=0.0, max_lat=1.0, max_lon=1.0)
-    _, segments, cameras = read_osm(path, bbox=tiny)
+    _, segments, cameras, _ = read_osm(path, bbox=tiny)
     assert segments == []
     assert cameras == []
+
+
+def test_named_places_are_extracted(parsed):
+    """The search index is built from the same parse as the graph."""
+    _, _, _, places = parsed
+    by_name = {p.name: p for p in places}
+    # K St NW and Park Path are named walkable ways.
+    assert "K St NW" in by_name
+    assert by_name["K St NW"].category == "street"
+    assert "Washington, DC" in by_name["K St NW"].context
+
+
+def test_place_categories_from_tags():
+    from getmehome.ingest.osm import place_category
+
+    assert place_category({"amenity": "bar", "name": "X"}) == "nightlife"
+    assert place_category({"amenity": "restaurant", "name": "X"}) == "food"
+    assert place_category({"railway": "station", "name": "X"}) == "station"
+    assert place_category({"shop": "books", "name": "X"}) == "shop"
+    assert place_category({"tourism": "museum", "name": "X"}) == "tourism"
+    assert place_category({"highway": "residential", "name": "X"}) == "street"
+    # Not a place at all.
+    assert place_category({"barrier": "fence"}) is None
+    assert place_category({"highway": "residential"}) is None
+
+
+def test_place_context_prefers_a_real_address():
+    from getmehome.ingest.osm import place_context
+
+    assert place_context(
+        {"addr:housenumber": "2461", "addr:street": "18th Street NW"}
+    ).startswith("2461 18th Street NW")
+    assert place_context({}) == "Washington, DC"

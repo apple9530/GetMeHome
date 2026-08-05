@@ -23,6 +23,7 @@ import osmium
 from ..config import FORBIDDEN_HIGHWAYS, WALKABLE_HIGHWAYS, BBox
 from ..geo import polyline_length_m
 from ..graph.model import RawSegment
+from ..places import Place
 from ..safety.cameras import AlprCamera, parse_direction
 
 # Access tag values that forbid pedestrians.
@@ -66,10 +67,83 @@ def _tags_to_dict(obj) -> dict[str, str]:
     return {t.k: t.v for t in obj.tags}
 
 
+# OSM tag -> the category the place index ranks by. Order matters: the first
+# key present wins, so a railway station tagged also as a shop is a station.
+_PLACE_CATEGORIES: list[tuple[str, dict[str, str] | None, str]] = [
+    ("railway", {"station": "station", "subway_entrance": "station", "halt": "station"}, ""),
+    ("public_transport", {"station": "station"}, ""),
+    ("aeroway", {"aerodrome": "transport", "terminal": "transport"}, ""),
+    ("amenity", {
+        "restaurant": "food", "cafe": "food", "fast_food": "food",
+        "food_court": "food", "ice_cream": "food",
+        "bar": "nightlife", "pub": "nightlife", "nightclub": "nightlife",
+        "biergarten": "nightlife",
+        "school": "education", "university": "education", "college": "education",
+        "library": "education", "kindergarten": "education",
+        "hospital": "healthcare", "clinic": "healthcare", "doctors": "healthcare",
+        "pharmacy": "healthcare", "dentist": "healthcare",
+        "theatre": "leisure", "cinema": "leisure", "arts_centre": "leisure",
+        "community_centre": "leisure",
+        "townhall": "civic", "police": "civic", "fire_station": "civic",
+        "post_office": "civic", "courthouse": "civic", "embassy": "civic",
+        "bank": "civic", "place_of_worship": "civic",
+        "bus_station": "transport", "ferry_terminal": "transport",
+    }, "other"),
+    ("shop", None, "shop"),
+    ("tourism", {
+        "museum": "tourism", "attraction": "tourism", "gallery": "tourism",
+        "hotel": "tourism", "hostel": "tourism", "artwork": "tourism",
+        "viewpoint": "tourism",
+    }, "tourism"),
+    ("leisure", {
+        "park": "leisure", "garden": "leisure", "sports_centre": "leisure",
+        "stadium": "leisure", "fitness_centre": "leisure", "pitch": "leisure",
+    }, "leisure"),
+    ("historic", None, "tourism"),
+    ("office", None, "office"),
+    ("healthcare", None, "healthcare"),
+]
+
+
+def place_category(tags: dict[str, str]) -> str | None:
+    """The place category for an object, or None if it is not a place."""
+    for key, values, fallback in _PLACE_CATEGORIES:
+        raw = tags.get(key)
+        if not raw:
+            continue
+        if values is None:
+            return fallback
+        mapped = values.get(raw)
+        if mapped:
+            return mapped
+        if fallback:
+            return fallback
+    # Named streets are searchable too — people type an address as often as a
+    # venue — but rank below real destinations.
+    if tags.get("highway") in WALKABLE_HIGHWAYS and tags.get("name"):
+        return "street"
+    return None
+
+
+def place_context(tags: dict[str, str]) -> str:
+    """Second line for a search result: an address if there is one."""
+    parts = []
+    if tags.get("addr:housenumber") and tags.get("addr:street"):
+        parts.append(f"{tags['addr:housenumber']} {tags['addr:street']}")
+    elif tags.get("addr:street"):
+        parts.append(tags["addr:street"])
+
+    if tags.get("addr:city"):
+        parts.append(tags["addr:city"])
+    else:
+        parts.append("Washington, DC")
+    return ", ".join(parts)
+
+
 def read_osm(
     path: Path, bbox: BBox | None = None
-) -> tuple[dict[int, tuple[float, float]], list[RawSegment], list[AlprCamera]]:
-    """Parse an extract into (node coords, walk segments, ALPR cameras)."""
+) -> tuple[dict[int, tuple[float, float]], list[RawSegment], list[AlprCamera], list[Place]]:
+    """Parse an extract into (node coords, walk segments, cameras, places)."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"OSM extract not found: {path}")
@@ -77,10 +151,27 @@ def read_osm(
     # --- pass 1: node reference counts + surveillance nodes ---------------
     ref_count: dict[int, int] = defaultdict(int)
     cameras: list[AlprCamera] = []
+    places: list[Place] = []
 
     for obj in osmium.FileProcessor(str(path)):
         if obj.is_node():
             tags = _tags_to_dict(obj)
+            name = tags.get("name", "").strip()
+            if name:
+                category = place_category(tags)
+                if category and category != "street":
+                    lat, lon = obj.location.lat, obj.location.lon
+                    if bbox is None or bbox.contains(lat, lon):
+                        places.append(
+                            Place(
+                                name=name,
+                                lat=lat,
+                                lon=lon,
+                                category=category,
+                                context=place_context(tags),
+                                osm_id=f"node/{obj.id}",
+                            )
+                        )
             if is_alpr(tags):
                 lat, lon = obj.location.lat, obj.location.lon
                 if bbox is None or bbox.contains(lat, lon):
@@ -117,10 +208,14 @@ def read_osm(
             continue
         tags = _tags_to_dict(obj)
         if not is_walkable(tags):
+            # Still worth indexing as a searchable place — a museum outline or
+            # a park boundary is not walkable but is very much a destination.
+            _record_way_place(obj, tags, tags.get("name", "").strip(), places, bbox)
             continue
 
         name = tags.get("name", "") or tags.get("ref", "")
         highway = tags.get("highway", "")
+        _record_way_place(obj, tags, name, places, bbox)
 
         current_refs: list[int] = []
         current_coords: list[tuple[float, float]] = []
@@ -157,7 +252,44 @@ def read_osm(
     used = {s.node_a for s in segments} | {s.node_b for s in segments}
     node_coords = {k: v for k, v in node_coords.items() if k in used}
 
-    return node_coords, segments, cameras
+    return node_coords, segments, cameras, places
+
+
+def _record_way_place(
+    obj, tags: dict[str, str], name: str, places: list[Place], bbox: BBox | None
+) -> None:
+    """Index a named way as a place, positioned at its centroid."""
+    if not name:
+        return
+    category = place_category(tags)
+    if not category:
+        return
+
+    lats, lons = [], []
+    for node in obj.nodes:
+        try:
+            lats.append(node.location.lat)
+            lons.append(node.location.lon)
+        except (osmium.InvalidLocationError, RuntimeError):
+            continue
+    if not lats:
+        return
+
+    lat = sum(lats) / len(lats)
+    lon = sum(lons) / len(lons)
+    if bbox is not None and not bbox.contains(lat, lon):
+        return
+
+    places.append(
+        Place(
+            name=name,
+            lat=lat,
+            lon=lon,
+            category=category,
+            context=place_context(tags),
+            osm_id=f"way/{obj.id}",
+        )
+    )
 
 
 def _emit(

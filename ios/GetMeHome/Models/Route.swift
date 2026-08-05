@@ -278,6 +278,7 @@ struct ServerMeta: Codable {
     let cameras: Int
     let transitStops: Int
     let transitPatterns: Int
+    let places: Int
     let crimeHistoryYears: Int
     let bbox: [Double]
 }

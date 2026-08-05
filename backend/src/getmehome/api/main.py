@@ -179,6 +179,7 @@ def meta() -> MetaResponse:
         cameras=len(state.cameras),
         transitStops=network.n_stops if network else 0,
         transitPatterns=len(network.patterns) if network else 0,
+        places=len(state.places) if state.places else 0,
         crimeHistoryYears=m.get("crime_history_years", 0),
         bbox=m.get(
             "bbox",
@@ -363,8 +364,68 @@ def crime_grid(
 
 
 @app.get("/geocode", response_model=GeocodeResponse)
-def geocode(q: str = Query(..., min_length=2), limit: int = Query(8, le=20)):
-    """Search for a place by name, restricted to the DC area."""
+def geocode(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(12, le=25),
+    lat: float | None = Query(None),
+    lon: float | None = Query(None),
+):
+    """Search for a place by name.
+
+    The local index built from the OSM extract answers first. It is forgiving
+    about punctuation and abbreviations in ways an external geocoder is not —
+    "madams organ" finds Madam's Organ, "14th st nw" finds 14th Street
+    Northwest — and it has no rate limit, so it can answer every keystroke.
+
+    Nominatim is consulted only to top up a thin result set, which is mostly
+    house-number addresses that OSM carries as interpolation rather than as
+    named objects.
+    """
+    state = None
+    try:
+        state = get_state()
+    except RuntimeError:
+        pass
+
+    near = (lat, lon) if lat is not None and lon is not None else None
+    results: list[GeocodeResult] = []
+    seen: set[tuple[int, int]] = set()
+
+    if state is not None and state.places is not None:
+        for hit in state.places.search(q, limit=limit, near=near):
+            key = (int(hit.place.lat * 20000), int(hit.place.lon * 20000))
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(
+                GeocodeResult(
+                    name=hit.place.name,
+                    address=hit.place.address,
+                    lat=hit.place.lat,
+                    lon=hit.place.lon,
+                )
+            )
+
+    # Only reach outward when the local index came up short. Nominatim is
+    # rate-limited, so calling it on every keystroke gets the app throttled
+    # within a few words.
+    if len(results) < 4:
+        for row in _nominatim(q, limit):
+            key = (int(row.lat * 20000), int(row.lon * 20000))
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(row)
+
+    return GeocodeResponse(results=results[:limit])
+
+
+def _nominatim(q: str, limit: int) -> list[GeocodeResult]:
+    """Query the external geocoder, returning nothing if it is unavailable.
+
+    Deliberately non-fatal: local results are usually enough, and a geocoder
+    outage should degrade search rather than break it.
+    """
     params = {
         "q": q,
         "format": "jsonv2",
@@ -378,27 +439,29 @@ def geocode(q: str = Query(..., min_length=2), limit: int = Query(8, le=20)):
             f"{GEOCODER_URL}/search",
             params=params,
             headers={"User-Agent": GEOCODER_USER_AGENT},
-            timeout=15.0,
+            timeout=8.0,
         )
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Geocoder unavailable: {exc}"
-        ) from exc
+        log.warning("geocoder unavailable: %s", exc)
+        return []
 
-    results = []
+    out: list[GeocodeResult] = []
     for row in payload:
         display = row.get("display_name", "")
-        results.append(
-            GeocodeResult(
-                name=row.get("name") or display.split(",")[0],
-                address=display,
-                lat=float(row["lat"]),
-                lon=float(row["lon"]),
+        try:
+            out.append(
+                GeocodeResult(
+                    name=row.get("name") or display.split(",")[0],
+                    address=display,
+                    lat=float(row["lat"]),
+                    lon=float(row["lon"]),
+                )
             )
-        )
-    return GeocodeResponse(results=results)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 @app.get("/reverse", response_model=GeocodeResponse)

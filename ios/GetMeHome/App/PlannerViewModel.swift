@@ -66,6 +66,8 @@ final class PlannerViewModel {
         destination?.displayName ?? "your destination"
     }
 
+    let places: PlaceStore
+
     private let client: RoutingClient
     private let location: LocationService
     private let settings: AppSettings
@@ -74,10 +76,24 @@ final class PlannerViewModel {
     private var overlayTask: Task<Void, Never>?
     private var lastOverlayBounds: MapBounds?
 
-    init(client: RoutingClient, location: LocationService, settings: AppSettings) {
+    init(
+        client: RoutingClient,
+        location: LocationService,
+        settings: AppSettings,
+        places: PlaceStore = PlaceStore()
+    ) {
         self.client = client
         self.location = location
         self.settings = settings
+        self.places = places
+    }
+
+    /// Starred places first, then recents — what the picker shows before any
+    /// text is typed.
+    var suggestions: [SavedPlace] { places.suggestions }
+
+    func toggleStar(_ result: GeocodeResult) {
+        places.toggleStar(result)
     }
 
     // MARK: - Editing the endpoints
@@ -149,6 +165,7 @@ final class PlannerViewModel {
         case .destination:
             destination = .place(result)
         }
+        places.record(result)
         syncFieldText()
         clearSearch()
 
@@ -232,7 +249,9 @@ final class PlannerViewModel {
             guard !Task.isCancelled else { return }
 
             do {
-                let results = try await client.geocode(query)
+                let results = try await client.geocode(
+                    query, near: location.location?.coordinate
+                )
                 guard !Task.isCancelled else { return }
                 searchResults = results
             } catch {

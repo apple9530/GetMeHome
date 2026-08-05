@@ -22,7 +22,7 @@ Worth being straight about this before you invest time in it.
 
 | Part | State |
 |---|---|
-| Backend routing, safety model, transit, crime grid, API | Written and covered by 84 passing tests |
+| Backend routing, safety model, transit, crime grid, search, API | Written and covered by 105 passing tests |
 | `RouteTracker` navigation maths | Algorithm validated independently against hand-computed cases |
 | iOS app | Compiles and launches; UI beyond that not exercised here |
 | The DC data build (`make graph`) | Streetlight + crime ingestion fixed against the real feeds |
@@ -270,7 +270,7 @@ provisioning profile expires every 7 days and you will need to re-install.
 | `POST /route` | Plan itineraries. Body takes origin, destination, modes, `avoidCameras`, optional `departAt` and `forceNight`. |
 | `GET /cameras` | Flock/ALPR cameras in a bbox, for the overlay. |
 | `GET /crime/grid` | Incidents binned into hexagons over a bbox, for the map overlay. |
-| `GET /geocode` · `GET /reverse` | Place search, via Nominatim. |
+| `GET /geocode` · `GET /reverse` | Fuzzy place search over the local OSM index, topped up by Nominatim. |
 | `GET /meta` · `GET /health` | Build provenance and liveness. |
 
 Interactive docs at `http://localhost:8000/docs` once running.
@@ -285,6 +285,37 @@ curl -X POST localhost:8000/route -H 'content-type: application/json' -d '{
   "forceNight": true
 }'
 ```
+
+---
+
+## Place search
+
+Search runs against an index of named places built from the same OSM extract
+as the routing graph, rather than proxying an external geocoder on every
+keystroke. That matters for three reasons: no rate limit, so it can answer as
+you type; results come back as a ranked list rather than a single answer; and
+we control the matching, so it can be forgiving in the ways that count.
+
+- **Punctuation is ignored.** "Madams Organ" finds Madam's Organ.
+- **Abbreviations expand both ways.** "14th st nw" and "14th Street Northwest"
+  normalise to the same query, as do Ave/Avenue, Blvd/Boulevard and the
+  quadrant suffixes — DC addresses are unusually abbreviation-heavy.
+- **Typos still match.** "Dupont Cirle" finds Dupont Circle, via a trigram
+  fallback below the exact and prefix tiers.
+- **Proximity breaks ties**, which DC needs: there is a 14th Street in more
+  than one quadrant.
+
+Matching is tiered rather than one fuzzy ratio, so an exact match always beats
+a prefix match, which always beats a merely similar one. A bare similarity
+score does not guarantee that and gets embarrassing on short queries.
+
+Nominatim is consulted only when the local index returns few results, mostly
+for house-number addresses that OSM carries as interpolation rather than as
+named objects. If it is down, search degrades rather than breaking.
+
+Recent searches and starred places are stored **on the device only**. Where
+someone goes regularly is among the more sensitive things an app can know,
+and the server never needs that list to plan a route.
 
 ---
 
@@ -320,6 +351,7 @@ backend/
   src/getmehome/
     config.py            every tunable weight
     geo.py               projection, polyline maths
+    places.py            fuzzy place search index
     daylight.py          solar elevation
     graph/               graph model + build pipeline
     ingest/              OSM, ArcGIS, GTFS readers
@@ -327,7 +359,7 @@ backend/
     routing/             A*, alternatives, RAPTOR, multimodal
     nav/                 turn-by-turn instructions
     api/                 FastAPI app
-  tests/                 84 tests, no data build required
+  tests/                 105 tests, no data build required
 ios/
   project.yml            XcodeGen spec
   GetMeHome/

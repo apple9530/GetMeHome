@@ -92,10 +92,17 @@ actor RoutingClient {
 
     // MARK: - Places
 
-    func geocode(_ query: String) async throws -> [GeocodeResult] {
-        let response: GeocodeResponse = try await get(
-            "/geocode", query: [URLQueryItem(name: "q", value: query)]
-        )
+    func geocode(
+        _ query: String, near: CLLocationCoordinate2D? = nil
+    ) async throws -> [GeocodeResult] {
+        var items = [URLQueryItem(name: "q", value: query)]
+        if let near {
+            // Lets the server break ties between same-named streets in
+            // different quadrants, which DC has plenty of.
+            items.append(URLQueryItem(name: "lat", value: String(near.latitude)))
+            items.append(URLQueryItem(name: "lon", value: String(near.longitude)))
+        }
+        let response: GeocodeResponse = try await get("/geocode", query: items)
         return response.results
     }
 

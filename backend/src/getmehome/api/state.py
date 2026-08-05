@@ -19,9 +19,11 @@ from ..config import (
     CRIME_POINTS_FILE,
     GRAPH_FILE,
     GRAPH_META_FILE,
+    PLACES_FILE,
     TRANSIT_FILE,
 )
 from ..graph.model import WalkGraph
+from ..places import PlaceIndex
 from ..routing.astar import GraphIndex
 from ..routing.multimodal import TransitIndex
 from ..safety.cameras import AlprCamera
@@ -37,6 +39,7 @@ class AppState:
     cameras: list[AlprCamera]
     transit: TransitIndex | None = None
     crime: CrimeIndex | None = None
+    places: PlaceIndex | None = None
 
     @property
     def has_transit(self) -> bool:
@@ -51,6 +54,7 @@ def load_state(
     meta_path: Path = GRAPH_META_FILE,
     transit_path: Path = TRANSIT_FILE,
     crime_path: Path = CRIME_POINTS_FILE,
+    places_path: Path = PLACES_FILE,
 ) -> AppState:
     """Load everything from the build directory."""
     global _state
@@ -108,8 +112,24 @@ def load_state(
             crime_path,
         )
 
+    places = None
+    if places_path.exists():
+        places = PlaceIndex.load(places_path)
+        log.info("%d searchable places", len(places))
+    else:
+        log.warning(
+            "no place index at %s — search will fall back to the external "
+            "geocoder. Rebuild the graph to generate it.",
+            places_path,
+        )
+
     _state = AppState(
-        graph=graph, index=index, cameras=cameras, transit=transit, crime=crime
+        graph=graph,
+        index=index,
+        cameras=cameras,
+        transit=transit,
+        crime=crime,
+        places=places,
     )
     return _state
 

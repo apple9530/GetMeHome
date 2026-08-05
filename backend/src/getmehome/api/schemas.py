@@ -184,5 +184,6 @@ class MetaResponse(BaseModel):
     cameras: int
     transitStops: int
     transitPatterns: int
+    places: int = 0
     crimeHistoryYears: int
     bbox: list[float]

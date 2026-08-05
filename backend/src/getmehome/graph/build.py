@@ -25,6 +25,7 @@ from ..config import (
     GRAPH_FILE,
     GRAPH_META_FILE,
     OSM_EXTRACT_URL,
+    PLACES_FILE,
     RAW_DIR,
     TRANSIT_FILE,
 )
@@ -32,6 +33,7 @@ from ..ingest.crime import fetch_crime, load_crime, save_crime
 from ..ingest.gtfs import load_gtfs
 from ..ingest.osm import download_extract, read_osm
 from ..ingest.streetlights import fetch_streetlights, load_streetlights, save_streetlights
+from ..places import PlaceIndex
 from ..safety.cameras import AlprCamera
 from ..safety.hexgrid import CrimeIndex
 from ..safety.scoring import apply_scores
@@ -89,10 +91,10 @@ def build(
         log.info("downloading OSM extract from %s", OSM_EXTRACT_URL)
         download_extract(OSM_EXTRACT_URL, source)
     log.info("parsing %s", source)
-    node_coords, segments, osm_cameras = read_osm(source, bbox=DC_BBOX)
+    node_coords, segments, osm_cameras, places = read_osm(source, bbox=DC_BBOX)
     log.info(
-        "parsed %d nodes, %d walkable segments, %d ALPR cameras",
-        len(node_coords), len(segments), len(osm_cameras),
+        "parsed %d nodes, %d walkable segments, %d cameras, %d named places",
+        len(node_coords), len(segments), len(osm_cameras), len(places),
     )
     if not segments:
         raise RuntimeError("no walkable segments parsed — is the extract valid?")
@@ -149,6 +151,7 @@ def build(
             "n_lights": len(lights),
             "n_incidents": len(incidents),
             "n_cameras": len(cameras),
+            "n_places": len(places),
             "crime_history_years": CRIME.history_years,
             "bbox": [DC_BBOX.min_lat, DC_BBOX.min_lon, DC_BBOX.max_lat, DC_BBOX.max_lon],
         },
@@ -169,6 +172,9 @@ def build(
     (BUILD_DIR / "cameras.json").write_text(
         json.dumps([c.to_dict() for c in cameras])
     )
+
+    PlaceIndex(places=places).save(PLACES_FILE)
+    log.info("wrote %s: %d searchable places", PLACES_FILE, len(places))
 
     CrimeIndex.from_incidents(incidents).save(CRIME_POINTS_FILE)
     log.info(

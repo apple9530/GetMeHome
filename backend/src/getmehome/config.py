@@ -27,6 +27,8 @@ TRANSIT_FILE = BUILD_DIR / "dc_transit.pkl"
 # per-segment scores, which cannot be un-mixed back into individual
 # incidents, so the raw points are carried separately for the overlay.
 CRIME_POINTS_FILE = BUILD_DIR / "crime_points.npz"
+# Named places extracted from OSM, for the search box.
+PLACES_FILE = BUILD_DIR / "places.json"
 
 # --------------------------------------------------------------------------
 # Study area — Washington, DC (plus a small collar so routes near the border

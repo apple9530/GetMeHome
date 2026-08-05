@@ -168,42 +168,135 @@ struct SearchView: View {
                     Task { await planner.useCurrentLocation(for: field) }
                 }
 
-                ForEach(planner.searchResults) { result in
-                    resultRow(
-                        icon: "mappin.circle.fill",
-                        title: result.name,
-                        subtitle: result.address,
-                        tint: .secondary
-                    ) {
-                        focusedField = nil
-                        Task { await planner.select(result) }
-                    }
-                }
-
-                if planner.isSearching {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("Searching…").font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding()
-                } else if planner.searchResults.isEmpty, currentText.count >= 2 {
-                    Text("No places found for “\(currentText)”")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding()
+                if currentText.isEmpty {
+                    savedPlaces
+                } else {
+                    searchResults
                 }
             }
         }
-        .frame(maxHeight: 260)
+        .frame(maxHeight: 300)
         // Without this, a drag that begins on the list dismisses the keyboard
         // and the row under the finger disappears before the tap lands.
         .scrollDismissesKeyboard(.never)
+    }
+
+    /// Starred places and history, shown before anything is typed.
+    @ViewBuilder
+    private var savedPlaces: some View {
+        let suggestions = planner.suggestions
+
+        if suggestions.isEmpty {
+            Text("Places you search for will appear here.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding()
+        } else {
+            let starred = suggestions.filter(\.isStarred)
+            let recents = suggestions.filter { !$0.isStarred }
+
+            if !starred.isEmpty {
+                sectionHeader("Starred")
+                ForEach(starred) { saved in
+                    placeRow(saved.place, isStarred: true)
+                }
+            }
+            if !recents.isEmpty {
+                sectionHeader("Recent")
+                ForEach(recents) { saved in
+                    placeRow(saved.place, isStarred: false)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        ForEach(planner.searchResults) { result in
+            placeRow(result, isStarred: planner.places.isStarred(result))
+        }
+
+        if planner.isSearching {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Searching…").font(.caption).foregroundStyle(.secondary)
+            }
+            .padding()
+        } else if planner.searchResults.isEmpty, currentText.count >= 2 {
+            Text("No places found for “\(currentText)”")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding()
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
     }
 
     private var currentText: String {
         switch planner.editingField {
         case .origin: planner.originText
         case .destination: planner.destinationText
+        }
+    }
+
+    /// A place, with its star toggle.
+    ///
+    /// The star is a separate button rather than a swipe action so it is
+    /// discoverable — a swipe on a row in a search dropdown is not something
+    /// anyone goes looking for.
+    private func placeRow(_ result: GeocodeResult, isStarred: Bool) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    focusedField = nil
+                    Task { await planner.select(result) }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: isStarred ? "star.fill" : "mappin.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(isStarred ? Color.yellow : .secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(result.name)
+                                .font(.subheadline.weight(.medium))
+                                .lineLimit(1)
+                            if !result.address.isEmpty {
+                                Text(result.address)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    planner.toggleStar(result)
+                } label: {
+                    Image(systemName: isStarred ? "star.fill" : "star")
+                        .font(.subheadline)
+                        .foregroundStyle(isStarred ? Color.yellow : .tertiary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isStarred ? "Unstar \(result.name)" : "Star \(result.name)")
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal)
+
+            Divider().padding(.leading, 48)
         }
     }
 
@@ -320,8 +413,10 @@ struct SearchView: View {
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(PlannerViewModel.self) private var planner
+    @Environment(PlaceStore.self) private var places
     @Environment(\.dismiss) private var dismiss
     @State private var meta: ServerMeta?
+    @State private var confirmClearHistory = false
 
     var body: some View {
         @Bindable var settings = settings
@@ -383,6 +478,33 @@ struct SettingsView: View {
                     )
                 }
 
+                Section {
+                    HStack {
+                        Text("Starred places")
+                        Spacer()
+                        Text("\(places.starred.count)")
+                            .foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    HStack {
+                        Text("Recent searches")
+                        Spacer()
+                        Text("\(places.saved.count - places.starred.count)")
+                            .foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Button("Clear search history", role: .destructive) {
+                        confirmClearHistory = true
+                    }
+                    .disabled(places.saved.count == places.starred.count)
+                } header: {
+                    Text("Places")
+                } footer: {
+                    Text(
+                        "Saved on this device only — where you go regularly "
+                            + "never leaves your phone. Starred places are kept "
+                            + "when you clear history."
+                    )
+                }
+
                 if let meta {
                     Section("Loaded data") {
                         row("Street segments", meta.segments.formatted())
@@ -393,6 +515,7 @@ struct SettingsView: View {
                         )
                         row("Flock cameras", meta.cameras.formatted())
                         row("Transit stops", meta.transitStops.formatted())
+                        row("Searchable places", meta.places.formatted())
                     }
                 }
 
@@ -421,6 +544,18 @@ struct SettingsView: View {
             .task {
                 let client = RoutingClient(baseURL: settings.serverURL)
                 meta = try? await client.meta()
+            }
+            .confirmationDialog(
+                "Clear search history?",
+                isPresented: $confirmClearHistory,
+                titleVisibility: .visible
+            ) {
+                Button("Clear history", role: .destructive) {
+                    places.clearHistory()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Starred places are kept.")
             }
         }
     }

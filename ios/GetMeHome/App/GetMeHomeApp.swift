@@ -8,18 +8,21 @@ struct GetMeHomeApp: App {
     @State private var speech = SpeechService()
     @State private var planner: PlannerViewModel
     @State private var client: RoutingClient
+    @State private var places: PlaceStore
 
     init() {
         let settings = AppSettings()
         let location = LocationService()
         let client = RoutingClient(baseURL: settings.serverURL)
+        let places = PlaceStore()
 
         _settings = State(initialValue: settings)
         _location = State(initialValue: location)
         _client = State(initialValue: client)
+        _places = State(initialValue: places)
         _planner = State(
             initialValue: PlannerViewModel(
-                client: client, location: location, settings: settings
+                client: client, location: location, settings: settings, places: places
             )
         )
     }
@@ -31,6 +34,7 @@ struct GetMeHomeApp: App {
                 .environment(location)
                 .environment(speech)
                 .environment(planner)
+                .environment(places)
                 .task {
                     location.requestAuthorization()
                     location.startUpdating()
