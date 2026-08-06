@@ -22,10 +22,19 @@ Worth being straight about this before you invest time in it.
 
 | Part | State |
 |---|---|
-| Backend routing, safety model, transit, crime grid, search, API | Written and covered by 110 passing tests |
+| Backend routing, safety model, transit, crime grid, search, sharing, API | Written and covered by 204 passing tests |
 | `RouteTracker` navigation maths | Algorithm validated independently against hand-computed cases |
 | iOS app | Compiles and launches; UI beyond that not exercised here |
 | The DC data build (`make graph`) | Streetlight + crime ingestion fixed against the real feeds |
+| WMATA **real-time** (live buses, predictions) | Written against the published API, **never run against it** — see below |
+
+The real-time transit feeds are the one part with no test coverage against
+reality: `api.wmata.com` was unreachable from the build environment, so the
+response parsing is written from WMATA's published field names and has never
+seen a real payload. Everything there fails soft by design — a wrong field name
+degrades to scheduled times rather than to an error — so the failure mode is
+"live never appears", not a broken app. If that is what you see, the parsing in
+`ingest/wmata_live.py` is the first place to look.
 
 The environment this was built in had no macOS or Swift toolchain, and its
 network policy blocked `maps2.dcgis.dc.gov`, `opendata.dc.gov`,
