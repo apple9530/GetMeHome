@@ -4,20 +4,27 @@ import Foundation
 enum RoutingError: LocalizedError {
     case badURL
     case server(status: Int, detail: String)
-    case offline
+    case unreachable(String)
+    case blockedByPolicy
     case decoding(String)
 
     var errorDescription: String? {
         switch self {
         case .badURL:
-            "The server address is not valid. Check it in Settings."
+            "The server address isn't valid. Check it in Settings."
         case let .server(status, detail):
             // The backend puts a human-readable reason in `detail` for the
             // cases a user can act on — off-graph endpoints especially — so
             // surface it rather than a status code.
             detail.isEmpty ? "The server returned an error (\(status))." : detail
-        case .offline:
-            "Can't reach the routing server. Check your connection."
+        case let .unreachable(reason):
+            // Naming the reason matters: "can't connect" is the same message
+            // whether the server is down, the address is wrong, or the phone
+            // is on a different network, and those need different fixes.
+            "Can't reach the routing server. \(reason)"
+        case .blockedByPolicy:
+            "iOS blocked the connection. Allow local network access for "
+                + "GetMeHome in iOS Settings > Privacy & Security > Local Network."
         case let .decoding(message):
             "Unexpected response from the server. \(message)"
         }
@@ -129,6 +136,10 @@ actor RoutingClient {
         try await get("/meta", query: [])
     }
 
+    func health() async throws -> ServerHealth {
+        try await get("/health", query: [])
+    }
+
     // MARK: - Transport
 
     private func get<T: Decodable>(_ path: String, query: [URLQueryItem]) async throws -> T {
@@ -154,9 +165,8 @@ actor RoutingClient {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: request)
-        } catch let error as URLError where error.code == .notConnectedToInternet
-            || error.code == .cannotConnectToHost || error.code == .timedOut {
-            throw RoutingError.offline
+        } catch let error as URLError {
+            throw Self.mapped(error, url: request.url)
         }
 
         guard let http = response as? HTTPURLResponse else {
@@ -172,6 +182,38 @@ actor RoutingClient {
             return try decoder.decode(T.self, from: data)
         } catch {
             throw RoutingError.decoding(error.localizedDescription)
+        }
+    }
+
+    /// Turn a URLError into something that says what to do about it.
+    private static func mapped(_ error: URLError, url: URL?) -> RoutingError {
+        let host = url?.host ?? "the server"
+        switch error.code {
+        case .appTransportSecurityRequiresSecureConnection:
+            return .blockedByPolicy
+        case .cannotConnectToHost:
+            // The commonest one by far, and on a phone it almost always means
+            // the address points at the phone itself rather than the Mac.
+            return .unreachable(
+                "Nothing is listening at \(host). Is the backend running, and "
+                    + "is the address right? On a device, localhost means the "
+                    + "phone — use your Mac's IP address."
+            )
+        case .cannotFindHost, .dnsLookupFailed:
+            return .unreachable("Can't find \(host).")
+        case .notConnectedToInternet:
+            return .unreachable("This device is offline.")
+        case .timedOut:
+            return .unreachable(
+                "\(host) didn't respond. If it's on your local network, check "
+                    + "both devices are on the same Wi-Fi."
+            )
+        case .networkConnectionLost:
+            return .unreachable("The connection dropped.")
+        case .cancelled:
+            return .unreachable("Cancelled.")
+        default:
+            return .unreachable(error.localizedDescription)
         }
     }
 

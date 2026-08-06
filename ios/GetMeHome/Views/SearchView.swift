@@ -425,6 +425,9 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var meta: ServerMeta?
     @State private var confirmClearHistory = false
+    @State private var health: ServerHealth?
+    @State private var healthError: String?
+    @State private var isTesting = false
 
     var body: some View {
         @Bindable var settings = settings
@@ -477,12 +480,34 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
+                    Button {
+                        Task { await testConnection() }
+                    } label: {
+                        HStack {
+                            Text("Test connection")
+                            Spacer()
+                            if isTesting {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                    }
+                    .disabled(isTesting)
+
+                    if let health {
+                        connectionResult(health)
+                    } else if let healthError {
+                        Label(healthError, systemImage: "xmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 } header: {
                     Text("Server")
                 } footer: {
                     Text(
                         "On a physical device, localhost is the phone itself — "
-                            + "use your Mac's IP address on the same network."
+                            + "use your Mac's IP address on the same Wi-Fi, e.g. "
+                            + "http://192.168.1.42:8000. Find it with "
+                            + "`ipconfig getifaddr en0`."
                     )
                 }
 
@@ -565,6 +590,55 @@ struct SettingsView: View {
             } message: {
                 Text("Starred places are kept.")
             }
+        }
+    }
+
+    /// What the server reported, so a half-built backend is visible here
+    /// rather than showing up later as features quietly doing nothing.
+    @ViewBuilder
+    private func connectionResult(_ health: ServerHealth) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(
+                health.isReady ? "Connected" : "Connected, but no graph loaded",
+                systemImage: health.isReady
+                    ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(health.isReady ? .green : .orange)
+
+            if health.isReady {
+                Text(
+                    [
+                        "\(health.segments ?? 0) segments",
+                        "\(health.streetlights ?? 0) lights",
+                        "\(health.searchablePlaces ?? 0) places",
+                        (health.transit ?? false) ? "transit on" : "no transit",
+                    ].joined(separator: " · ")
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+                if (health.searchablePlaces ?? 0) == 0 {
+                    Text("No search index — rebuild the graph to enable search.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    private func testConnection() async {
+        isTesting = true
+        health = nil
+        healthError = nil
+        defer { isTesting = false }
+
+        let client = RoutingClient(baseURL: settings.serverURL)
+        do {
+            health = try await client.health()
+        } catch {
+            healthError = (error as? RoutingError)?.errorDescription
+                ?? error.localizedDescription
         }
     }
 

@@ -269,6 +269,21 @@ struct GeocodeResponse: Codable {
     let results: [GeocodeResult]
 }
 
+/// `/health`. Every field past `status` is optional so an older server,
+/// which reported fewer of them, still decodes rather than failing in a way
+/// that looks like the server being unreachable.
+struct ServerHealth: Codable {
+    let status: String
+    let segments: Int?
+    let streetlights: Int?
+    let crimeIncidents: Int?
+    let searchablePlaces: Int?
+    let transit: Bool?
+    let cameras: Int?
+
+    var isReady: Bool { status == "ok" }
+}
+
 struct ServerMeta: Codable {
     let builtAt: String
     let nodes: Int

@@ -68,9 +68,27 @@ targets:
           - location
           - audio
 
-        # The default server is plaintext HTTP on localhost for development.
-        # Ship against HTTPS and delete this exception before release.
+        # Reaching a backend on your own machine needs both of these.
+        #
+        # iOS 14+ requires explicit permission before an app may talk to
+        # anything on the local network, and the prompt only appears if this
+        # string is present. Without it the connection fails silently, which
+        # looks exactly like the server being down.
+        NSLocalNetworkUsageDescription: >-
+          GetMeHome connects to the routing server running on your computer to
+          plan safe routes.
+
+        # DEVELOPMENT ONLY. The backend is served over plaintext HTTP, which
+        # App Transport Security blocks by default. NSAllowsLocalNetworking
+        # is not enough on its own: it covers .local names and link-local
+        # addresses, not a LAN address like 192.168.1.42.
+        #
+        # Before shipping: serve the backend over HTTPS and delete
+        # NSAllowsArbitraryLoads. Leaving it in a released app means every
+        # request the app makes can be read and altered in transit, and App
+        # Review will ask about it.
         NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
     settings:
       base:

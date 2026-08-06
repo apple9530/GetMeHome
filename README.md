@@ -265,8 +265,19 @@ Selecting the team in Xcode works too; you will just have to redo it after
 every regeneration.
 
 On the **simulator**, the default server URL (`http://localhost:8000`) works as
-is. On a **physical device**, localhost is the phone — open Settings inside the
-app and point it at your Mac's LAN address, e.g. `http://192.168.1.42:8000`.
+is. On a **physical device**, localhost is the phone itself — open Settings
+inside the app and point it at your Mac's LAN address:
+
+```bash
+ipconfig getifaddr en0     # e.g. 192.168.1.42
+```
+
+then set the server to `http://192.168.1.42:8000`. Both devices must be on the
+same Wi-Fi, and iOS will prompt for Local Network permission the first time.
+
+Settings has a **Test connection** button that reports what the server
+actually replied with — including whether it has a graph, streetlights, a
+search index and transit loaded. Use it before assuming the app is at fault.
 
 Without a paid Apple Developer account you can still run on a device, but the
 provisioning profile expires every 7 days and you will need to re-install.
