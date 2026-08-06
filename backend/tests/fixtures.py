@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from getmehome.cities import DC
 from getmehome.geo import polyline_length_m
 from getmehome.graph.model import RawSegment, build_graph
 from getmehome.safety.cameras import AlprCamera
@@ -76,7 +77,9 @@ def build_grid_graph(rows: int = 7, cols: int = 7):
                     f"{c + 1}th St NW",
                 )
 
-    return build_graph(node_coords, segments, meta={"fixture": "grid"})
+    return build_graph(
+        node_coords, segments, DC.projection, meta={"fixture": "grid"}
+    )
 
 
 def dense_lights_along_column(col: int, rows: int = 7, cols: int = 7):
@@ -125,4 +128,22 @@ def camera_facing(row: int, col: int, direction_deg: float | None = 0.0):
         direction_deg=direction_deg,
         operator="Flock Safety",
         osm_id=f"node/{row}{col}",
+    )
+
+
+def dc_crime_index(incidents, now=None):
+    """A :class:`CrimeIndex` in DC's frame with DC's offence vocabulary.
+
+    Both are required arguments in production so nothing can accidentally bin
+    one city's incidents in another's grid. Tests are all DC, so this saves
+    repeating the pair at every call site.
+    """
+    from getmehome.safety.hexgrid import CrimeIndex
+
+    return CrimeIndex.from_incidents(
+        incidents,
+        now=now,
+        projection=DC.projection,
+        vocabulary=DC.crime_vocabulary,
+        city_slug=DC.slug,
     )

@@ -19,7 +19,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from ..config import LIGHTING, LightingConfig
-from ..geo import sample_polyline, to_local
+from ..geo import Projection, sample_polyline
 
 # How many nearby lamps to consider per sample point. Contributions fall off
 # as 1/d^2, so beyond the nearest dozen or so the sum has converged.
@@ -153,6 +153,7 @@ def rank_scores(scores: np.ndarray) -> np.ndarray:
 def score_segments(
     segment_coords: list[list[tuple[float, float]]],
     lights: list[StreetLight],
+    projection: Projection,
     cfg: LightingConfig = LIGHTING,
 ) -> np.ndarray:
     """Lighting score in [0, 1] per segment. 0 is unlit, 1 is brightly lit.
@@ -170,8 +171,9 @@ def score_segments(
         return scores
 
     if lights:
-        lx, ly = to_local(
-            np.array([lamp.lat for lamp in lights]), np.array([lamp.lon for lamp in lights])
+        lx, ly = projection.to_local(
+            np.array([lamp.lat for lamp in lights]),
+            np.array([lamp.lon for lamp in lights]),
         )
         tree = cKDTree(np.column_stack([lx, ly]))
         lumens = np.array([lamp.lumens for lamp in lights], dtype=np.float64)
@@ -185,7 +187,7 @@ def score_segments(
     bounds: list[tuple[int, int]] = []
     cursor = 0
     for coords in segment_coords:
-        pts = sample_polyline(coords, cfg.sample_spacing_m)
+        pts = sample_polyline(coords, cfg.sample_spacing_m, projection)
         all_samples.append(pts)
         bounds.append((cursor, cursor + len(pts)))
         cursor += len(pts)

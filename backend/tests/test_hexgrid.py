@@ -7,7 +7,9 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import pytest
 
-from getmehome.geo import haversine_m, to_local
+from getmehome.cities import DC
+from getmehome.config import CRIME
+from getmehome.geo import haversine_m
 from getmehome.safety.crime_model import CrimeIncident
 from getmehome.safety.hexgrid import (
     MAX_CELLS,
@@ -18,6 +20,8 @@ from getmehome.safety.hexgrid import (
     choose_radius,
     hex_vertices,
 )
+
+from .fixtures import dc_crime_index
 
 NOW = datetime(2026, 8, 1, tzinfo=UTC)
 CENTER_LAT, CENTER_LON = 38.9050, -77.0300
@@ -91,7 +95,7 @@ def test_every_point_lands_in_exactly_one_cell():
 
 
 def test_hex_vertices_sit_at_the_radius():
-    verts = hex_vertices(CENTER_LAT, CENTER_LON, 250.0)
+    verts = hex_vertices(CENTER_LAT, CENTER_LON, 250.0, DC.projection)
     assert len(verts) == 6
     for lat, lon in verts:
         assert haversine_m(CENTER_LAT, CENTER_LON, lat, lon) == pytest.approx(250, rel=0.02)
@@ -100,23 +104,23 @@ def test_hex_vertices_sit_at_the_radius():
 def test_radius_ladder_keeps_cell_count_bounded():
     """Zooming out must pick a bigger cell, never return thousands of them."""
     # The whole District.
-    wide = choose_radius(38.79, -77.12, 39.00, -76.91)
+    wide = choose_radius(38.79, -77.12, 39.00, -76.91, DC.projection)
     # A few blocks.
-    tight = choose_radius(38.900, -77.035, 38.910, -77.025)
+    tight = choose_radius(38.900, -77.035, 38.910, -77.025, DC.projection)
 
     assert wide in SIZE_LADDER
     assert tight in SIZE_LADDER
     assert wide > tight
 
-    x0, y0 = to_local(38.79, -77.12)
-    x1, y1 = to_local(39.00, -76.91)
+    x0, y0 = DC.projection.to_local(38.79, -77.12)
+    x1, y1 = DC.projection.to_local(39.00, -76.91)
     area = abs(float(x1) - float(x0)) * abs(float(y1) - float(y0))
     assert area / (2.598 * wide * wide) <= MAX_CELLS
 
 
 def test_grid_is_anchored_not_relative_to_the_viewport():
     """Panning must not shift the cells under the user's finger."""
-    index = CrimeIndex.from_incidents(
+    index = dc_crime_index(
         incidents_at(CENTER_LAT, CENTER_LON, 40, spread=0.002), now=NOW
     )
 
@@ -141,7 +145,7 @@ def test_cells_aggregate_counts_and_offenses():
         incidents_at(CENTER_LAT, CENTER_LON, 12, offense="ROBBERY")
         + incidents_at(CENTER_LAT, CENTER_LON, 5, offense="HOMICIDE")
     )
-    index = CrimeIndex.from_incidents(incidents, now=NOW)
+    index = dc_crime_index(incidents, now=NOW)
 
     cells, radius = index.cells(38.895, -77.040, 38.915, -77.020, radius_m=400.0)
 
@@ -163,7 +167,7 @@ def test_intensity_is_severity_weighted_not_a_raw_count():
     """Five homicides must outrank twenty petty thefts."""
     homicides = incidents_at(38.9060, -77.0300, 5, offense="HOMICIDE")
     thefts = incidents_at(38.9000, -77.0300, 20, offense="THEFT/OTHER")
-    index = CrimeIndex.from_incidents(homicides + thefts, now=NOW)
+    index = dc_crime_index(homicides + thefts, now=NOW)
 
     cells, _ = index.cells(38.890, -77.040, 38.915, -77.020, radius_m=200.0)
     by_total = {c.total: c for c in cells}
@@ -177,7 +181,7 @@ def test_intensity_is_severity_weighted_not_a_raw_count():
 
 
 def test_night_filter_and_share():
-    index = CrimeIndex.from_incidents(
+    index = dc_crime_index(
         incidents_at(CENTER_LAT, CENTER_LON, 10, shift="MIDNIGHT")
         + incidents_at(CENTER_LAT, CENTER_LON, 10, shift="DAY"),
         now=NOW,
@@ -197,7 +201,7 @@ def test_night_filter_and_share():
 
 
 def test_latest_incident_is_reported():
-    index = CrimeIndex.from_incidents(
+    index = dc_crime_index(
         incidents_at(CENTER_LAT, CENTER_LON, 10), now=NOW
     )
     cells, _ = index.cells(38.895, -77.040, 38.915, -77.020, radius_m=400.0)
@@ -206,7 +210,7 @@ def test_latest_incident_is_reported():
 
 
 def test_incidents_outside_the_box_are_excluded():
-    index = CrimeIndex.from_incidents(
+    index = dc_crime_index(
         incidents_at(38.9800, -76.9200, 30), now=NOW  # far north-east
     )
     cells, _ = index.cells(38.895, -77.040, 38.915, -77.020, radius_m=200.0)
@@ -214,7 +218,7 @@ def test_incidents_outside_the_box_are_excluded():
 
 
 def test_empty_index_is_safe():
-    index = CrimeIndex.from_incidents([], now=NOW)
+    index = dc_crime_index([], now=NOW)
     assert index.count == 0
     cells, radius = index.cells(38.895, -77.040, 38.915, -77.020)
     assert cells == []
@@ -222,7 +226,7 @@ def test_empty_index_is_safe():
 
 
 def test_round_trip_through_disk(tmp_path):
-    index = CrimeIndex.from_incidents(
+    index = dc_crime_index(
         incidents_at(CENTER_LAT, CENTER_LON, 25, spread=0.001), now=NOW
     )
     path = tmp_path / "points.npz"
@@ -253,7 +257,7 @@ def test_large_dataset_stays_under_the_cell_cap():
             strict=True,
         )
     ]
-    index = CrimeIndex.from_incidents(incidents, now=NOW)
+    index = dc_crime_index(incidents, now=NOW)
 
     cells, radius = index.cells(38.79, -77.13, 39.01, -76.90)
     assert len(cells) <= MAX_CELLS, f"{len(cells)} cells would stall the map"
@@ -278,7 +282,7 @@ def test_one_robbery_outweighs_many_car_break_ins():
         incidents_at(CENTER_LAT, CENTER_LON, 40, offense="THEFT F/AUTO", shift="DAY")
         + incidents_at(CENTER_LAT, CENTER_LON, 1, offense="ROBBERY")
     )
-    index = CrimeIndex.from_incidents(incidents, now=NOW)
+    index = dc_crime_index(incidents, now=NOW)
     cells, _ = index.cells(38.895, -77.040, 38.915, -77.020, radius_m=400.0)
 
     top = cells[0].by_offense[0]
@@ -292,22 +296,22 @@ def test_one_robbery_outweighs_many_car_break_ins():
 
 def test_sexual_offences_rank_with_the_most_serious():
     """Sexual offences must sit at the top of the severity scale."""
-    from getmehome.config import CRIME
 
-    assert CRIME.severity["SEX ABUSE"] == CRIME.severity["HOMICIDE"]
-    assert CRIME.category["SEX ABUSE"] == "sexual"
+    vocab = DC.crime_vocabulary
+    assert vocab.severity["SEX ABUSE"] == vocab.severity["HOMICIDE"]
+    assert vocab.category["SEX ABUSE"] == "sexual"
     assert "sexual" in CRIME.serious_categories
 
 
 def test_violent_and_property_severity_are_far_apart():
     """The gap has to be wide enough to actually change routing decisions."""
-    from getmehome.config import CRIME
 
     violent = ["HOMICIDE", "SEX ABUSE", "ASSAULT W/DANGEROUS WEAPON", "ROBBERY"]
     property_crime = ["MOTOR VEHICLE THEFT", "THEFT F/AUTO", "THEFT/OTHER", "BURGLARY"]
 
     def effective(name: str) -> float:
-        return CRIME.severity[name] * CRIME.pedestrian_relevance[name]
+        vocab = DC.crime_vocabulary
+        return vocab.severity[name] * vocab.pedestrian_relevance[name]
 
     worst_property = max(effective(n) for n in property_crime)
     least_violent = min(effective(n) for n in violent)
@@ -320,10 +324,9 @@ def test_violent_and_property_severity_are_far_apart():
 
 def test_property_crime_still_registers():
     """Not zero: heavy property crime is a weak signal of low supervision."""
-    from getmehome.config import CRIME
 
     for name in ("MOTOR VEHICLE THEFT", "THEFT F/AUTO", "THEFT/OTHER"):
-        assert CRIME.severity[name] > 0
+        assert DC.crime_vocabulary.severity[name] > 0
 
 
 def test_a_violent_cell_outranks_a_high_volume_property_cell():
@@ -332,7 +335,7 @@ def test_a_violent_cell_outranks_a_high_volume_property_cell():
     property_crime = incidents_at(
         38.9000, -77.0300, 60, offense="MOTOR VEHICLE THEFT", shift="DAY"
     )
-    index = CrimeIndex.from_incidents(violent + property_crime, now=NOW)
+    index = dc_crime_index(violent + property_crime, now=NOW)
 
     cells, _ = index.cells(38.890, -77.040, 38.915, -77.020, radius_m=200.0)
     by_total = {c.total: c for c in cells}
@@ -349,14 +352,14 @@ def test_cell_size_floor_prevents_tiny_cells():
     assert min(SIZE_LADDER) >= 165.0
 
     # A few blocks across, the tightest a user is likely to zoom.
-    radius = choose_radius(38.9000, -77.0350, 38.9060, -77.0270)
+    radius = choose_radius(38.9000, -77.0350, 38.9060, -77.0270, DC.projection)
     assert radius >= min(SIZE_LADDER)
 
     # And a mid-zoom view stays within the render budget.
-    x0, y0 = to_local(38.890, -77.060)
-    x1, y1 = to_local(38.920, -77.010)
+    x0, y0 = DC.projection.to_local(38.890, -77.060)
+    x1, y1 = DC.projection.to_local(38.920, -77.010)
     area = abs(float(x1) - float(x0)) * abs(float(y1) - float(y0))
-    mid = choose_radius(38.890, -77.060, 38.920, -77.010)
+    mid = choose_radius(38.890, -77.060, 38.920, -77.010, DC.projection)
     assert area / (2.598 * mid * mid) <= MAX_CELLS
 
 
@@ -378,7 +381,7 @@ def test_offense_codes_become_readable_english():
 
 
 def test_breakdown_carries_a_display_name():
-    index = CrimeIndex.from_incidents(
+    index = dc_crime_index(
         incidents_at(CENTER_LAT, CENTER_LON, 5, offense="THEFT F/AUTO"), now=NOW
     )
     cells, _ = index.cells(38.895, -77.040, 38.915, -77.020, radius_m=400.0)

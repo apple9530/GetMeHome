@@ -13,7 +13,8 @@ import json
 import logging
 from pathlib import Path
 
-from ..config import DDOT_STREETLIGHTS_URL, LIGHTING
+from ..cities import DC
+from ..config import LIGHTING
 from ..safety.lighting import StreetLight, lumens_for_type
 from .arcgis import ArcGisClient, ArcGisError, feature_point, pick_field
 
@@ -32,9 +33,14 @@ _DEAD_STATUSES = {
 
 
 def fetch_streetlights(
-    service_url: str = DDOT_STREETLIGHTS_URL, limit: int | None = None
+    service_url: str | None = None, limit: int | None = None
 ) -> list[StreetLight]:
-    """Download every streetlight in the District."""
+    """Download every streetlight in the District.
+
+    ArcGIS-specific. NYC's inventory is on a Socrata portal and goes through
+    :mod:`getmehome.ingest.socrata`.
+    """
+    service_url = service_url or DC.lights.url
     lights: list[StreetLight] = []
 
     with ArcGisClient(service_url) as client:

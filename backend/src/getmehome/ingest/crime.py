@@ -17,7 +17,8 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..config import CRIME, MPD_CRIME_SERVICE_URL
+from ..cities import DC
+from ..config import CRIME
 from ..safety.crime_model import CrimeIncident
 from .arcgis import ArcGisClient, ArcGisError, feature_point, pick_field
 
@@ -68,11 +69,18 @@ def parse_timestamp(value) -> datetime | None:
 
 
 def fetch_crime(
-    service_url: str = MPD_CRIME_SERVICE_URL,
+    service_url: str | None = None,
     years: int = CRIME.history_years,
     limit: int | None = None,
 ) -> list[CrimeIncident]:
-    """Download the last ``years`` calendar years of incidents."""
+    """Download the last ``years`` calendar years of MPD incidents.
+
+    ArcGIS-specific, and so DC-specific. A city whose feed is a Socrata portal
+    goes through :mod:`getmehome.ingest.socrata` instead; the build picks the
+    adapter from ``city.crime.kind`` rather than from the city itself, so a new
+    city on a familiar platform needs no new ingest code.
+    """
+    service_url = service_url or DC.crime.url
     current_year = datetime.now(UTC).year
     wanted_years = {str(y) for y in range(current_year - years + 1, current_year + 1)}
 

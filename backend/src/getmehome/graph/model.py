@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import CAMERAS, CRIME, ISOLATION, LIGHTING, RISK, ROUTING
+from ..geo import Projection
 
 
 @dataclass
@@ -64,6 +65,11 @@ class WalkGraph:
     highways: list[str]
     # Lookback in days for each slice of ``seg_crime``, in the same order.
     crime_windows: list[int]
+    # The frame ``node_x``/``node_y`` are expressed in. Stored with the graph
+    # rather than looked up by city, so a graph cannot be read through another
+    # city's frame — which would be a silent kilometre-scale error, not a
+    # crash.
+    projection: Projection
     meta: dict
 
     # ------------------------------------------------------------------
@@ -236,7 +242,12 @@ class WalkGraph:
         meta_path = meta_path or path.with_name(path.stem + "_meta.json")
         meta_path.write_text(
             json.dumps(
-                {"names": self.names, "highways": self.highways, "meta": self.meta},
+                {
+                    "names": self.names,
+                    "highways": self.highways,
+                    "projection": self.projection.to_dict(),
+                    "meta": self.meta,
+                },
                 indent=1,
             )
         )
@@ -282,6 +293,7 @@ class WalkGraph:
             adj_edges=z["adj_edges"],
             names=sidecar["names"],
             highways=sidecar["highways"],
+            projection=Projection.from_dict(sidecar["projection"]),
             meta=sidecar.get("meta", {}),
         )
 
@@ -343,6 +355,7 @@ def isolation_from_tags(highway: str, tags: dict[str, str]) -> float:
 def build_graph(
     node_coords: dict[int, tuple[float, float]],
     segments: list[RawSegment],
+    projection: Projection,
     meta: dict | None = None,
 ) -> WalkGraph:
     """Compile raw segments into a :class:`WalkGraph`.
@@ -351,15 +364,13 @@ def build_graph(
     scoring pass fills them in afterwards. Isolation is derived from tags and
     so can be computed immediately.
     """
-    from ..geo import to_local
-
     # Renumber the (sparse, OSM-derived) node ids into a dense 0..n-1 range.
     used = sorted({s.node_a for s in segments} | {s.node_b for s in segments})
     remap = {old: new for new, old in enumerate(used)}
 
     lat = np.array([node_coords[o][0] for o in used], dtype=np.float64)
     lon = np.array([node_coords[o][1] for o in used], dtype=np.float64)
-    x, y = to_local(lat, lon)
+    x, y = projection.to_local(lat, lon)
 
     name_index: dict[str, int] = {"": 0}
     names: list[str] = [""]
@@ -434,6 +445,7 @@ def build_graph(
         adj_edges=adj_edges,
         names=names,
         highways=highways,
+        projection=projection,
         meta=meta or {},
     )
 

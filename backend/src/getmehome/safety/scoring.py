@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from ..cities import CrimeVocabulary
 from ..config import CRIME
 from ..graph.model import WalkGraph
 from .cameras import AlprCamera
@@ -22,6 +23,7 @@ def apply_scores(
     incidents: list[CrimeIncident],
     cameras: list[AlprCamera],
     progress: Callable[[str], None] | None = None,
+    vocabulary: CrimeVocabulary | None = None,
 ) -> dict[int, CrimeSurface]:
     """Populate a graph's lighting, crime and camera attributes in place.
 
@@ -35,8 +37,11 @@ def apply_scores(
     for diagnostics or for scoring transit stop locations later.
     """
     coords = [graph.segment_coords(i) for i in range(graph.n_segments)]
+    # Everything scored here lands in the graph's own frame, so it is taken
+    # from the graph rather than from a city lookup.
+    projection = graph.projection
 
-    graph.seg_lit = score_lighting(coords, lights)
+    graph.seg_lit = score_lighting(coords, lights, projection)
 
     surfaces: dict[int, CrimeSurface] = {}
     graph.crime_windows = list(CRIME.windows_days)
@@ -44,14 +49,19 @@ def apply_scores(
         (len(graph.crime_windows), 2, graph.n_segments), dtype=np.float32
     )
     for w, window in enumerate(graph.crime_windows):
-        surface = CrimeSurface(incidents, window_days=window)
+        surface = CrimeSurface(
+            incidents,
+            window_days=window,
+            projection=projection,
+            vocabulary=vocabulary,
+        )
         if progress:
             progress(f"{window}d window: {surface.n_incidents} incidents")
         graph.seg_crime[w, 0] = surface.score_segments(coords, night=False)
         graph.seg_crime[w, 1] = surface.score_segments(coords, night=True)
         surfaces[window] = surface
 
-    graph.seg_camera = score_cameras(coords, cameras)
+    graph.seg_camera = score_cameras(coords, cameras, projection)
 
     return surfaces
 

@@ -20,7 +20,8 @@ from pathlib import Path
 
 import osmium
 
-from ..config import FORBIDDEN_HIGHWAYS, WALKABLE_HIGHWAYS, BBox
+from ..cities import BBox
+from ..config import FORBIDDEN_HIGHWAYS, WALKABLE_HIGHWAYS
 from ..geo import polyline_length_m
 from ..graph.model import RawSegment
 from ..places import Place

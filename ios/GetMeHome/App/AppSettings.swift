@@ -72,28 +72,39 @@ enum CrimeWindow: Int, CaseIterable, Identifiable {
 @Observable
 @MainActor
 final class AppSettings {
+    /// The development default: a backend on the machine running the
+    /// simulator. On a physical device localhost is the phone itself, so a
+    /// device build needs either a configured URL or the Mac's LAN address
+    /// typed into Settings.
+    static let localServer = "http://localhost:8000"
+
     /// Where the app talks to when the user has not overridden it.
     ///
-    /// Baked in at build time from `GETMEHOME_SERVER_URL`, which `project.yml`
-    /// writes into Info.plist. That is what makes a shipped build connect to
-    /// the deployed backend on first launch with nobody typing anything — the
-    /// Settings field stays as an override for development and for anyone
-    /// running their own server.
-    ///
-    /// Falls back to the simulator's host. On a physical device localhost is
-    /// the phone itself, so a device build with no configured URL will fail to
-    /// connect, which is the correct and visible outcome rather than a silent
-    /// one.
+    /// Optionally baked in at build time from `GETMEHOME_SERVER_URL`, which
+    /// `project.yml` writes into Info.plist. Setting it is what makes a
+    /// shipped build reach a deployed backend on first launch with nobody
+    /// typing anything. Leaving it unset — the normal case while developing —
+    /// keeps the app pointed at localhost, and the Settings field remains an
+    /// override either way.
     static let defaultServer: String = {
-        let configured = Bundle.main.object(forInfoDictionaryKey: "GetMeHomeServerURL")
-        if let value = configured as? String,
-           !value.isEmpty,
-           // Guard against the placeholder surviving into a build.
-           !value.contains("$("),
-           URL(string: value) != nil {
-            return value
-        }
-        return "http://localhost:8000"
+        guard let value = Bundle.main.object(
+            forInfoDictionaryKey: "GetMeHomeServerURL"
+        ) as? String else { return localServer }
+
+        // An unset build variable can reach Info.plist either as an empty
+        // string or as the literal placeholder, in either of two syntaxes
+        // depending on whether XcodeGen or the build system got to it. Rather
+        // than enumerate the ways it can be wrong, insist it is right: an
+        // absolute http(s) URL with a host. Anything else is not a server
+        // address and falling back is better than trying to reach it.
+        guard let url = URL(string: value.trimmingCharacters(in: .whitespaces)),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let host = url.host,
+              !host.isEmpty
+        else { return localServer }
+
+        return url.absoluteString
     }()
 
     var serverURLString: String {
@@ -142,7 +153,7 @@ final class AppSettings {
     }
 
     var serverURL: URL {
-        URL(string: serverURLString) ?? URL(string: Self.defaultServer)!
+        URL(string: serverURLString) ?? URL(string: Self.localServer)!
     }
 
     var modes: [String] {

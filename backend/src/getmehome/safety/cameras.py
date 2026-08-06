@@ -34,7 +34,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from ..config import CAMERAS, CameraConfig
-from ..geo import sample_polyline, to_local
+from ..geo import Projection, sample_polyline
 
 _MAX_NEIGHBOURS = 8
 
@@ -115,6 +115,7 @@ def visibility(
 def score_segments(
     segment_coords: list[list[tuple[float, float]]],
     cameras: list[AlprCamera],
+    projection: Projection,
     cfg: CameraConfig = CAMERAS,
 ) -> np.ndarray:
     """Per-segment ALPR exposure in [0, 1].
@@ -132,7 +133,7 @@ def score_segments(
 
     cam_lat = np.array([c.lat for c in cameras], dtype=np.float64)
     cam_lon = np.array([c.lon for c in cameras], dtype=np.float64)
-    cx, cy = to_local(cam_lat, cam_lon)
+    cx, cy = projection.to_local(cam_lat, cam_lon)
     tree = cKDTree(np.column_stack([cx, cy]))
 
     cam_dir = np.array(
@@ -147,7 +148,7 @@ def score_segments(
     bounds: list[tuple[int, int]] = []
     cursor = 0
     for coords in segment_coords:
-        pts = sample_polyline(coords, cfg.sample_spacing_m)
+        pts = sample_polyline(coords, cfg.sample_spacing_m, projection)
         all_pts.append(pts)
         bounds.append((cursor, cursor + len(pts)))
         cursor += len(pts)
@@ -210,6 +211,7 @@ def cameras_in_bbox(
 def coverage_along_route(
     coords: list[tuple[float, float]],
     cameras: list[AlprCamera],
+    projection: Projection,
     cfg: CameraConfig = CAMERAS,
 ) -> dict:
     """Summarise camera exposure over a full route, for the UI.
@@ -222,7 +224,7 @@ def coverage_along_route(
 
     cam_lat = np.array([c.lat for c in cameras], dtype=np.float64)
     cam_lon = np.array([c.lon for c in cameras], dtype=np.float64)
-    cx, cy = to_local(cam_lat, cam_lon)
+    cx, cy = projection.to_local(cam_lat, cam_lon)
     tree = cKDTree(np.column_stack([cx, cy]))
 
     cam_dir = np.array(
@@ -230,7 +232,7 @@ def coverage_along_route(
     )
     cam_has_dir = np.array([c.direction_deg is not None for c in cameras], dtype=bool)
 
-    samples = sample_polyline(coords, cfg.sample_spacing_m)
+    samples = sample_polyline(coords, cfg.sample_spacing_m, projection)
     if len(samples) == 0:
         return {"cameras_passed": 0, "fraction_covered": 0.0}
 

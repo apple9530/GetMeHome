@@ -1,44 +1,93 @@
 """Geodetic helpers.
 
-Washington DC spans about 25km, so we work in a local equirectangular
-projection anchored at the centre of the city. Over that extent the distortion
-against a proper projected CRS is a few centimetres, which is far below the
-accuracy of any of our inputs, and it keeps every distance computation to
-plain numpy arithmetic.
+A city spans a few tens of kilometres, so we work in a local equirectangular
+projection anchored inside it. Over that extent the distortion against a proper
+projected CRS is a few centimetres — far below the accuracy of any of our
+inputs — and it keeps every distance computation to plain numpy arithmetic.
+
+**The anchor is not global.** It used to be: a module-level origin at the
+centre of the District, which every call site shared. That is fine for one
+city and quietly wrong for two. The east-west scale is ``cos(origin_lat)``, so
+projecting New York (40.7 degrees) through Washington's origin (38.9) shrinks
+every east-west distance by 2.6% — around a kilometre across the city, in a
+direction nothing would ever flag as an error.
+
+So there are two kinds of projection here, and the distinction is the point:
+
+* :class:`Projection` — a named, stable frame for a whole city's dataset.
+  Anything that has to agree with something else computed earlier uses one of
+  these: graph node coordinates, KD-trees of lamps and cameras, the crime
+  raster, the hex grid. Each city carries its own, and it is stored with the
+  data rather than looked up, so a graph can never be read through the wrong
+  frame.
+* **Self-anchored helpers** — the polyline functions below take no projection
+  at all. Measuring, resampling or simplifying one line only needs a frame
+  local to *that line*, so they anchor on its own first vertex. That makes them
+  correct in any city with nothing to thread through, and marginally more
+  accurate than a city-wide frame even in the city they came from.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
 EARTH_RADIUS_M = 6_371_008.8
 
-# Projection origin — the geographic centre of the District.
-ORIGIN_LAT = 38.9047
-ORIGIN_LON = -77.0164
-
-_LAT_SCALE = EARTH_RADIUS_M * math.pi / 180.0
-_LON_SCALE = _LAT_SCALE * math.cos(math.radians(ORIGIN_LAT))
+_DEG_M = EARTH_RADIUS_M * math.pi / 180.0
 
 
-def to_local(lat, lon):
-    """Project lat/lon (degrees) to local metres east/north of the origin."""
-    lat = np.asarray(lat, dtype=np.float64)
-    lon = np.asarray(lon, dtype=np.float64)
-    x = (lon - ORIGIN_LON) * _LON_SCALE
-    y = (lat - ORIGIN_LAT) * _LAT_SCALE
-    return x, y
+@dataclass(frozen=True)
+class Projection:
+    """A local equirectangular frame anchored at one point.
+
+    Frozen and cheap to construct. Carried by the data it was used to build,
+    which is what stops a city's coordinates being read through another
+    city's frame.
+    """
+
+    origin_lat: float
+    origin_lon: float
+
+    @property
+    def lon_scale(self) -> float:
+        return _DEG_M * math.cos(math.radians(self.origin_lat))
+
+    def to_local(self, lat, lon):
+        """Project lat/lon (degrees) to metres east/north of the origin."""
+        lat = np.asarray(lat, dtype=np.float64)
+        lon = np.asarray(lon, dtype=np.float64)
+        return (lon - self.origin_lon) * self.lon_scale, (lat - self.origin_lat) * _DEG_M
+
+    def to_wgs84(self, x, y):
+        """Inverse of :meth:`to_local`."""
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        return y / _DEG_M + self.origin_lat, x / self.lon_scale + self.origin_lon
+
+    def to_dict(self) -> dict:
+        return {"originLat": self.origin_lat, "originLon": self.origin_lon}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Projection:
+        return cls(
+            origin_lat=float(data["originLat"]), origin_lon=float(data["originLon"])
+        )
 
 
-def to_wgs84(x, y):
-    """Inverse of :func:`to_local`."""
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    lon = x / _LON_SCALE + ORIGIN_LON
-    lat = y / _LAT_SCALE + ORIGIN_LAT
-    return lat, lon
+def frame_for(coords) -> Projection:
+    """A frame anchored on the first vertex of some geometry.
+
+    What the self-anchored helpers use. The error in an equirectangular frame
+    grows with distance from its origin, so anchoring on the geometry itself
+    keeps it at its smallest for exactly the thing being measured.
+    """
+    if len(coords) == 0:
+        return Projection(0.0, 0.0)
+    first = coords[0]
+    return Projection(float(first[0]), float(first[1]))
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -74,24 +123,31 @@ def polyline_length_m(coords: list[tuple[float, float]]) -> float:
         return 0.0
     lat = np.array([c[0] for c in coords])
     lon = np.array([c[1] for c in coords])
-    x, y = to_local(lat, lon)
+    x, y = frame_for(coords).to_local(lat, lon)
     return float(np.hypot(np.diff(x), np.diff(y)).sum())
 
 
 def sample_polyline(
-    coords: list[tuple[float, float]], spacing_m: float
+    coords: list[tuple[float, float]], spacing_m: float, projection: Projection
 ) -> np.ndarray:
     """Resample a (lat, lon) polyline at roughly ``spacing_m`` intervals.
 
     Returns an ``(n, 2)`` array of local x/y coordinates. Always includes the
     two endpoints, and never returns fewer than one point, so a zero-length
     edge still gets scored.
+
+    The projection is required rather than self-anchored, and that is the
+    difference between this and the helpers above. These points are compared
+    against *other* points — lamps in a KD-tree, cells in the crime raster,
+    every other segment in the snap index — so they have to share one frame.
+    Self-anchoring here would give every segment its own origin and put the
+    whole city on top of itself.
     """
     if not coords:
         return np.zeros((0, 2))
     lat = np.array([c[0] for c in coords], dtype=np.float64)
     lon = np.array([c[1] for c in coords], dtype=np.float64)
-    x, y = to_local(lat, lon)
+    x, y = projection.to_local(lat, lon)
     pts = np.column_stack([x, y])
     if len(pts) == 1:
         return pts
@@ -136,15 +192,16 @@ def interpolate_polyline(
     if fraction >= 1:
         return coords[-1]
 
+    frame = frame_for(coords)
     lat = np.array([c[0] for c in coords])
     lon = np.array([c[1] for c in coords])
-    x, y = to_local(lat, lon)
+    x, y = frame.to_local(lat, lon)
     seg = np.hypot(np.diff(x), np.diff(y))
     cum = np.concatenate([[0.0], np.cumsum(seg)])
     target = cum[-1] * fraction
     tx = float(np.interp(target, cum, x))
     ty = float(np.interp(target, cum, y))
-    plat, plon = to_wgs84(tx, ty)
+    plat, plon = frame.to_wgs84(tx, ty)
     return float(plat), float(plon)
 
 
@@ -161,9 +218,10 @@ def split_polyline(
     if fraction >= 1:
         return list(coords), [coords[-1]]
 
+    frame = frame_for(coords)
     lat = np.array([c[0] for c in coords])
     lon = np.array([c[1] for c in coords])
-    x, y = to_local(lat, lon)
+    x, y = frame.to_local(lat, lon)
     seg = np.hypot(np.diff(x), np.diff(y))
     cum = np.concatenate([[0.0], np.cumsum(seg)])
     target = cum[-1] * fraction
@@ -173,7 +231,7 @@ def split_polyline(
 
     tx = float(np.interp(target, cum, x))
     ty = float(np.interp(target, cum, y))
-    plat, plon = to_wgs84(tx, ty)
+    plat, plon = frame.to_wgs84(tx, ty)
     cut = (float(plat), float(plon))
 
     return coords[: idx + 1] + [cut], [cut] + coords[idx + 1 :]
@@ -188,7 +246,7 @@ def simplify_polyline(
 
     lat = np.array([c[0] for c in coords])
     lon = np.array([c[1] for c in coords])
-    x, y = to_local(lat, lon)
+    x, y = frame_for(coords).to_local(lat, lon)
     pts = np.column_stack([x, y])
     keep = np.zeros(len(pts), dtype=bool)
     keep[0] = keep[-1] = True

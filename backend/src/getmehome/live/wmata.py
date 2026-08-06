@@ -27,11 +27,11 @@ from __future__ import annotations
 import logging
 import re
 import time
-from dataclasses import dataclass, field
 
 import httpx
 
 from ..config import WMATA_API_KEY
+from .base import LivePrediction, LiveVehicle
 
 log = logging.getLogger("getmehome.wmata")
 
@@ -53,36 +53,6 @@ _TIMEOUT_S = 6.0
 _STATION_CODE = re.compile(r"(?:^|[^A-Z0-9])([A-Z]\d{2})(?:[^A-Z0-9]|$)")
 
 
-@dataclass
-class LivePrediction:
-    """One upcoming arrival, as the operator currently expects it."""
-
-    route_name: str
-    headsign: str
-    minutes: int
-    mode: str
-    vehicle_id: str = ""
-    trip_id: str = ""
-
-
-@dataclass
-class LiveVehicle:
-    """Where a vehicle is now."""
-
-    vehicle_id: str
-    route_name: str
-    headsign: str
-    lat: float
-    lon: float
-    mode: str = "bus"
-    # Seconds ahead (negative) or behind (positive) schedule.
-    deviation_s: float = 0.0
-    trip_id: str = ""
-    # True when the position was interpolated rather than reported. Trains are
-    # always estimated; buses never are.
-    estimated: bool = False
-
-
 class WmataLive:
     """Cached client for the real-time endpoints.
 
@@ -101,6 +71,12 @@ class WmataLive:
     @property
     def enabled(self) -> bool:
         return bool(self.api_key)
+
+    @property
+    def disabled_reason(self) -> str:
+        if not self.api_key:
+            return "Live arrivals need a WMATA API key; showing the timetable."
+        return "No live arrivals right now; showing the timetable."
 
     def _get(self, url: str, params: dict | None = None, cache_key: str = "") -> dict:
         """Fetch and cache, returning ``{}`` on any failure."""
@@ -248,12 +224,3 @@ def station_code(stop_id: str) -> str:
     """
     match = _STATION_CODE.search(stop_id.upper())
     return match.group(1) if match else ""
-
-
-@dataclass
-class LiveStatus:
-    """What real-time data was actually available, for the client to say so."""
-
-    available: bool = False
-    reason: str = ""
-    predictions: list[LivePrediction] = field(default_factory=list)

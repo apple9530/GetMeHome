@@ -33,8 +33,6 @@ from ..geo import (
     project_point_to_segment,
     sample_polyline,
     split_polyline,
-    to_local,
-    to_wgs84,
 )
 from ..graph.model import WalkGraph
 
@@ -85,6 +83,9 @@ class GraphIndex:
 
     def __init__(self, graph: WalkGraph, snap_spacing_m: float = 20.0) -> None:
         self.graph = graph
+        # Taken from the graph, never from a city lookup: the snap points below
+        # have to land in the same frame the node coordinates were built in.
+        self.projection = graph.projection
         self.edge_to = graph.edge_to.tolist()
         self.edge_seg = graph.edge_seg.tolist()
         self.adj_ptr = graph.adj_ptr.tolist()
@@ -97,7 +98,9 @@ class GraphIndex:
         pts: list[np.ndarray] = []
         owner: list[int] = []
         for s in range(graph.n_segments):
-            sampled = sample_polyline(graph.segment_coords(s), snap_spacing_m)
+            sampled = sample_polyline(
+                graph.segment_coords(s), snap_spacing_m, self.projection
+            )
             if len(sampled):
                 pts.append(sampled)
                 owner.extend([s] * len(sampled))
@@ -126,7 +129,7 @@ class GraphIndex:
             return None
         limit = max_distance_m or ROUTING.max_snap_distance_m
 
-        px, py = to_local(lat, lon)
+        px, py = self.projection.to_local(lat, lon)
         px, py = float(px), float(py)
 
         # Take several candidate sample points: the nearest sample does not
@@ -157,7 +160,7 @@ class GraphIndex:
 
         lat = np.array([c[0] for c in coords])
         lon = np.array([c[1] for c in coords])
-        xs, ys = to_local(lat, lon)
+        xs, ys = self.projection.to_local(lat, lon)
 
         seg_d = np.hypot(np.diff(xs), np.diff(ys))
         cum = np.concatenate([[0.0], np.cumsum(seg_d)])
@@ -178,7 +181,7 @@ class GraphIndex:
                 best_xy = (qx, qy)
                 best_along = float(cum[i] + t * seg_d[i])
 
-        slat, slon = to_wgs84(*best_xy)
+        slat, slon = self.projection.to_wgs84(*best_xy)
         fwd, _ = self.segment_edges(seg_id)
         return SnapPoint(
             seg_id=seg_id,
@@ -271,7 +274,7 @@ def shortest_path(
     speed = ROUTING.walk_speed_mps
     penalties = edge_penalties or {}
 
-    ex, ey = to_local(end.lat, end.lon)
+    ex, ey = index.projection.to_local(end.lat, end.lon)
     ex, ey = float(ex), float(ey)
 
     def heuristic(node: int) -> float:

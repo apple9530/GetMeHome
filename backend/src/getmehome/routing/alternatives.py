@@ -158,7 +158,9 @@ def compute_options(
                 path=path,
                 safety=safety,
                 cameras=(
-                    coverage_along_route(path.coords, cameras) if cameras else {}
+                    coverage_along_route(path.coords, cameras, graph.projection)
+                    if cameras
+                    else {}
                 ),
             )
         )

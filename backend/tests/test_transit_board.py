@@ -6,8 +6,9 @@ from datetime import date
 
 import pytest
 
+from getmehome.cities import DC
 from getmehome.ingest.gtfs import load_gtfs
-from getmehome.ingest.wmata_live import LivePrediction, _rail_minutes, station_code
+from getmehome.live.wmata import LivePrediction, _rail_minutes, station_code
 from getmehome.transit_board import (
     DAY_S,
     attach_live,
@@ -87,13 +88,13 @@ def write_feed(tmp_path, *, with_stations: bool = False):
 @pytest.fixture(scope="module")
 def network(tmp_path_factory):
     path = write_feed(tmp_path_factory.mktemp("plain"))
-    return load_gtfs(path, service_date=SERVICE_DATE)
+    return load_gtfs(path, DC.projection, service_date=SERVICE_DATE)
 
 
 @pytest.fixture(scope="module")
 def station_network(tmp_path_factory):
     path = write_feed(tmp_path_factory.mktemp("stations"), with_stations=True)
-    return load_gtfs(path, service_date=SERVICE_DATE)
+    return load_gtfs(path, DC.projection, service_date=SERVICE_DATE)
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +393,7 @@ def api(station_network):
 
     def build():
         return AppState(
+            city=DC,
             graph=graph,
             index=index,
             cameras=[],

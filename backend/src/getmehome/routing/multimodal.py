@@ -313,7 +313,13 @@ def build_transit_itinerary(
         departure_s=depart,
         arrival_s=arrive,
         n_transfers=journey.n_transfers,
-        cameras=coverage_along_route(all_coords, cameras) if cameras else {},
+        cameras=(
+            coverage_along_route(
+                all_coords, cameras, index.graph.projection
+            )
+            if cameras
+            else {}
+        ),
     )
 
 

@@ -6,6 +6,7 @@ from datetime import date, datetime
 
 import pytest
 
+from getmehome.cities import DC
 from getmehome.ingest.gtfs import load_gtfs, parse_time
 from getmehome.routing.astar import GraphIndex
 from getmehome.routing.multimodal import TransitIndex, plan
@@ -88,7 +89,7 @@ def feed(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def network(feed):
-    return load_gtfs(feed, service_date=SERVICE_DATE)
+    return load_gtfs(feed, DC.projection, service_date=SERVICE_DATE)
 
 
 def test_parse_time_handles_past_midnight():
@@ -113,7 +114,7 @@ def test_trips_sorted_by_departure(network):
 
 def test_service_date_filtering(feed):
     """A Sunday has no service in this feed, so nothing should load."""
-    sunday = load_gtfs(feed, service_date=date(2026, 6, 14))
+    sunday = load_gtfs(feed, DC.projection, service_date=date(2026, 6, 14))
     assert all(len(p.trips) == 0 for p in sunday.patterns) or not sunday.patterns
 
 

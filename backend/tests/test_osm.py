@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from getmehome.cities import DC, BBox
 from getmehome.config import DC_BBOX
 from getmehome.ingest.osm import is_alpr, is_walkable, read_osm
 from getmehome.safety.cameras import parse_direction
@@ -163,7 +164,7 @@ def test_graph_builds_from_parsed_osm(parsed):
     from getmehome.routing.astar import GraphIndex
 
     node_coords, segments, _, _ = parsed
-    graph = build_graph(node_coords, segments)
+    graph = build_graph(node_coords, segments, DC.projection)
 
     assert graph.n_segments == 4  # K St x2 + Park Path x2
     assert graph.n_edges == 8
@@ -186,7 +187,7 @@ def test_isolation_reflects_tags(parsed):
     from getmehome.graph.model import build_graph
 
     node_coords, segments, _, _ = parsed
-    graph = build_graph(node_coords, segments)
+    graph = build_graph(node_coords, segments, DC.projection)
 
     by_name = {}
     for i in range(graph.n_segments):
@@ -198,7 +199,6 @@ def test_isolation_reflects_tags(parsed):
 
 def test_bbox_filtering(tmp_path):
     """Geometry outside the study area is dropped."""
-    from getmehome.config import BBox
 
     path = tmp_path / "sample.osm"
     path.write_text(OSM_XML)

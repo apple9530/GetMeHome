@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from ..geo import Projection
+
 # GTFS route_type -> the mode name we show in the UI.
 ROUTE_TYPE_NAMES = {
     0: "tram",
@@ -135,7 +137,10 @@ def active_services(source, on: date) -> set[str]:
 
 
 def load_gtfs(
-    path: Path, service_date: date | None = None, max_transfer_walk_m: float = 250.0
+    path: Path,
+    projection: Projection,
+    service_date: date | None = None,
+    max_transfer_walk_m: float = 250.0,
 ) -> TransitNetwork:
     """Build a :class:`TransitNetwork` from a GTFS zip or directory.
 
@@ -263,7 +268,9 @@ def load_gtfs(
         for pos, s in enumerate(p.stops):
             stop_patterns[s].append((p.pattern_id, pos))
 
-    transfers = _build_transfers(source, stops, stop_index, max_transfer_walk_m)
+    transfers = _build_transfers(
+        source, stops, stop_index, max_transfer_walk_m, projection
+    )
 
     if isinstance(source, zipfile.ZipFile):
         source.close()
@@ -278,7 +285,11 @@ def load_gtfs(
 
 
 def _build_transfers(
-    source, stops: list[Stop], stop_index: dict[str, int], max_walk_m: float
+    source,
+    stops: list[Stop],
+    stop_index: dict[str, int],
+    max_walk_m: float,
+    projection: Projection,
 ) -> dict[int, list[tuple[int, int]]]:
     """In-station and short street transfers between stops.
 
@@ -288,8 +299,6 @@ def _build_transfers(
     """
     import numpy as np
     from scipy.spatial import cKDTree
-
-    from ..geo import to_local
 
     transfers: dict[int, set[tuple[int, int]]] = defaultdict(set)
 
@@ -309,7 +318,7 @@ def _build_transfers(
     if stops:
         lat = np.array([s.lat for s in stops])
         lon = np.array([s.lon for s in stops])
-        x, y = to_local(lat, lon)
+        x, y = projection.to_local(lat, lon)
         pts = np.column_stack([x, y])
         tree = cKDTree(pts)
         for a, b in tree.query_pairs(max_walk_m):

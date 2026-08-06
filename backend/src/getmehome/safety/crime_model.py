@@ -1,4 +1,4 @@
-"""Crime risk surface from MPD incident reports.
+"""Crime risk surface from a city's incident reports.
 
 Three things distinguish this from "count crimes near the street":
 
@@ -32,10 +32,13 @@ from datetime import UTC, datetime
 import numpy as np
 from scipy import ndimage
 
+from ..cities import DC, CrimeVocabulary
 from ..config import CRIME, CrimeConfig
-from ..geo import sample_polyline, to_local
+from ..geo import Projection, sample_polyline
 
-# MPD shift values that count as "night" for routing purposes.
+# Shift values that count as "night". MPD publishes these directly; for a feed
+# that only carries a timestamp the ingester derives one and uses the same
+# vocabulary, so everything downstream sees the same three values.
 NIGHT_SHIFTS = frozenset({"EVENING", "MIDNIGHT"})
 
 
@@ -52,6 +55,7 @@ class CrimeIncident:
 def incident_weight(
     incident: CrimeIncident,
     now: datetime,
+    vocabulary: CrimeVocabulary | None = None,
     cfg: CrimeConfig = CRIME,
     decay: bool = True,
 ) -> float:
@@ -60,11 +64,17 @@ def incident_weight(
     ``decay=False`` is what window-scoped scoring uses: inside a window every
     incident counts equally, because the window already expresses how far back
     the user wants to look.
+
+    The vocabulary must be the one belonging to the feed these incidents came
+    from. Scoring NYPD offences against MPD's table finds nothing and falls
+    through to the default weight for every incident, which turns the surface
+    into a map of where people are rather than of where risk is.
     """
+    vocab = vocabulary or DC.crime_vocabulary
     offense = (incident.offense or "").strip().upper()
-    severity = cfg.severity.get(offense, cfg.default_severity)
-    relevance = cfg.pedestrian_relevance.get(offense, cfg.default_relevance)
-    method = cfg.method_multiplier.get((incident.method or "").strip().upper(), 1.0)
+    severity = vocab.severity.get(offense, cfg.default_severity)
+    relevance = vocab.pedestrian_relevance.get(offense, cfg.default_relevance)
+    method = vocab.method_multiplier.get((incident.method or "").strip().upper(), 1.0)
 
     weight = severity * relevance * method
     if not decay:
@@ -104,8 +114,14 @@ class CrimeSurface:
         cfg: CrimeConfig = CRIME,
         cell_size_m: float | None = None,
         window_days: int | None = None,
+        projection: Projection | None = None,
+        vocabulary: CrimeVocabulary | None = None,
     ) -> None:
         self.cfg = cfg
+        self.vocabulary = vocabulary or DC.crime_vocabulary
+        # The raster's frame. Sampling it later has to use the same one, so it
+        # is held on the surface rather than passed per call.
+        self.projection = projection or Projection(0.0, 0.0)
         self.now = now or datetime.now(UTC)
         self.cell_size = cell_size_m or max(10.0, cfg.kernel_bandwidth_m / 6.0)
         self.window_days = window_days
@@ -128,10 +144,13 @@ class CrimeSurface:
         self._empty = False
         lat = np.array([i.lat for i in incidents], dtype=np.float64)
         lon = np.array([i.lon for i in incidents], dtype=np.float64)
-        x, y = to_local(lat, lon)
+        x, y = self.projection.to_local(lat, lon)
 
         weights = np.array(
-            [incident_weight(i, self.now, cfg, decay=decay) for i in incidents],
+            [
+                incident_weight(i, self.now, self.vocabulary, cfg, decay=decay)
+                for i in incidents
+            ],
             dtype=np.float64,
         )
         is_night = np.array(
@@ -221,7 +240,9 @@ class CrimeSurface:
         bounds: list[tuple[int, int]] = []
         cursor = 0
         for coords in segment_coords:
-            pts = sample_polyline(coords, self.cfg.sample_spacing_m)
+            pts = sample_polyline(
+                coords, self.cfg.sample_spacing_m, self.projection
+            )
             all_pts.append(pts)
             bounds.append((cursor, cursor + len(pts)))
             cursor += len(pts)

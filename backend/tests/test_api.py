@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from getmehome.api.main import app
 from getmehome.api.state import AppState, set_state
+from getmehome.cities import DC
 from getmehome.routing.astar import GraphIndex
 from getmehome.safety.hexgrid import CrimeIndex
 from getmehome.safety.scoring import apply_scores
@@ -36,6 +37,7 @@ def client():
     )
     def build_state():
         return AppState(
+            city=DC,
             graph=graph,
             index=GraphIndex(graph),
             cameras=cams,
@@ -131,7 +133,10 @@ def test_avoid_cameras_flag(client):
 def test_route_rejects_far_away_origin(client):
     r = client.post("/route", json=_route_body(origin={"lat": 39.29, "lon": -76.61}))
     assert r.status_code == 422
-    assert "not near" in r.json()["detail"]
+    detail = r.json()["detail"]
+    # The message names the city, because "no walkable street near there" is
+    # a poor way to say "you have the wrong city selected".
+    assert "Washington" in detail
 
 
 def test_route_validates_input(client):
@@ -305,7 +310,7 @@ def test_crime_grid_accepts_a_window(client):
 # ---------------------------------------------------------------------------
 
 
-def test_external_results_are_merged_into_the_ranking_not_appended(monkeypatch):
+def test_external_results_are_merged_into_the_ranking_not_appended(client, monkeypatch):
     """The bug behind "801 3rd St NW": the right answer arrived fifth.
 
     The local index returns several plausible near-misses, so appending
@@ -330,7 +335,7 @@ def test_external_results_are_merged_into_the_ranking_not_appended(monkeypatch):
     monkeypatch.setattr(
         main,
         "_nominatim",
-        lambda q, limit: [
+        lambda q, limit, city: [
             GeocodeResult(
                 name="801 3rd Street Northwest",
                 address="801 3rd Street Northwest, Washington, DC",
@@ -340,7 +345,7 @@ def test_external_results_are_merged_into_the_ranking_not_appended(monkeypatch):
         ],
     )
 
-    body = main.geocode(q="801 3rd St NW", limit=12, lat=None, lon=None)
+    body = main.geocode(q="801 3rd St NW", limit=12, lat=None, lon=None, city=None)
     assert body.results[0].name == "801 3rd Street Northwest"
 
 

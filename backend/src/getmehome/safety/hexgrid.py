@@ -26,8 +26,9 @@ from datetime import UTC, datetime
 
 import numpy as np
 
+from ..cities import DC, CrimeVocabulary
 from ..config import CRIME, CrimeConfig
-from ..geo import to_local, to_wgs84
+from ..geo import Projection
 from .crime_model import NIGHT_SHIFTS, incident_weight
 
 # Cell circumradius options in metres. Chosen so each step is roughly 1.5x the
@@ -48,11 +49,15 @@ SQRT3 = math.sqrt(3.0)
 
 
 def choose_radius(
-    min_lat: float, min_lon: float, max_lat: float, max_lon: float
+    min_lat: float,
+    min_lon: float,
+    max_lat: float,
+    max_lon: float,
+    projection: Projection,
 ) -> float:
     """Smallest ladder size that keeps the viewport under ``MAX_CELLS``."""
-    x0, y0 = to_local(min_lat, min_lon)
-    x1, y1 = to_local(max_lat, max_lon)
+    x0, y0 = projection.to_local(min_lat, min_lon)
+    x1, y1 = projection.to_local(max_lat, max_lon)
     width = abs(float(x1) - float(x0))
     height = abs(float(y1) - float(y0))
     area = max(1.0, width * height)
@@ -109,32 +114,36 @@ def axial_center(q: np.ndarray | int, r: np.ndarray | int, radius: float):
 
 
 def hex_vertices(
-    center_lat: float, center_lon: float, radius_m: float
+    center_lat: float,
+    center_lon: float,
+    radius_m: float,
+    projection: Projection,
 ) -> list[tuple[float, float]]:
     """The six corners of a pointy-top hex, as (lat, lon).
 
     Provided so the client draws exactly the cell the server binned into,
     rather than approximating it.
     """
-    cx, cy = to_local(center_lat, center_lon)
+    cx, cy = projection.to_local(center_lat, center_lon)
     points = []
     for i in range(6):
         angle = math.pi / 180.0 * (60 * i - 30)
         vx = float(cx) + radius_m * math.cos(angle)
         vy = float(cy) + radius_m * math.sin(angle)
-        lat, lon = to_wgs84(vx, vy)
+        lat, lon = projection.to_wgs84(vx, vy)
         points.append((float(lat), float(lon)))
     return points
 
 
-def readable_offense(code: str, cfg: CrimeConfig = CRIME) -> str:
-    """Turn an MPD offence code into something a person would say.
+def readable_offense(code: str, vocabulary: CrimeVocabulary | None = None) -> str:
+    """Turn a police offence code into something a person would say.
 
     Falls back to a tidied version of the code rather than showing it raw, so
-    a new offence type MPD starts publishing degrades to "Theft From Boat"
-    rather than "THEFT F/BOAT".
+    a new offence type the department starts publishing degrades to "Theft
+    From Boat" rather than "THEFT F/BOAT".
     """
-    known = cfg.display_name.get(code)
+    vocab = vocabulary or DC.crime_vocabulary
+    known = vocab.display_name.get(code)
     if known:
         return known
     cleaned = code.replace("/", " / ").replace("  ", " ").strip()
@@ -197,11 +206,22 @@ class CrimeIndex:
         timestamps: np.ndarray,
         offenses: list[str],
         cfg: CrimeConfig = CRIME,
+        projection: Projection | None = None,
+        vocabulary: CrimeVocabulary | None = None,
+        city_slug: str = DC.slug,
     ) -> None:
         self.cfg = cfg
+        self.vocabulary = vocabulary or DC.crime_vocabulary
+        self.city_slug = city_slug
+        # The frame the binning happens in. The grid is anchored to this
+        # origin rather than to the viewport, which is what keeps cells still
+        # while the map pans — so it has to be the city's own frame, and it is
+        # persisted alongside the points.
+        self.projection = projection or Projection(0.0, 0.0)
         # Parallel to `offenses`: the broad category of each offence name.
         self.categories = [
-            cfg.category.get(name, cfg.default_category) for name in offenses
+            self.vocabulary.category.get(name, cfg.default_category)
+            for name in offenses
         ]
         self.lat = lat
         self.lon = lon
@@ -211,7 +231,7 @@ class CrimeIndex:
         self.timestamps = timestamps  # epoch seconds
         self.offenses = offenses
 
-        x, y = to_local(lat, lon)
+        x, y = self.projection.to_local(lat, lon)
         self.x = np.asarray(x)
         self.y = np.asarray(y)
 
@@ -221,12 +241,20 @@ class CrimeIndex:
 
     @classmethod
     def from_incidents(
-        cls, incidents: list, now: datetime | None = None, cfg: CrimeConfig = CRIME
+        cls,
+        incidents: list,
+        now: datetime | None = None,
+        cfg: CrimeConfig = CRIME,
+        projection: Projection | None = None,
+        vocabulary: CrimeVocabulary | None = None,
+        city_slug: str = DC.slug,
     ) -> CrimeIndex:
         if not incidents:
             empty = np.zeros(0)
-            return cls(empty, empty, empty, empty.astype(np.int16),
-                       empty.astype(bool), empty, [], cfg)
+            return cls(
+                empty, empty, empty, empty.astype(np.int16), empty.astype(bool),
+                empty, [], cfg, projection, vocabulary, city_slug,
+            )
 
         now = now or datetime.now(incidents[0].reported_at.tzinfo)
         vocab: dict[str, int] = {}
@@ -245,7 +273,10 @@ class CrimeIndex:
             # Undecayed: the lookback window the caller picks is the recency
             # filter, so an incident either counts or it does not.
             weight=np.array(
-                [incident_weight(i, now, cfg, decay=False) for i in incidents],
+                [
+                    incident_weight(i, now, vocabulary, cfg, decay=False)
+                    for i in incidents
+                ],
                 dtype=np.float32,
             ),
             offense_ids=np.array(ids, dtype=np.int16),
@@ -258,6 +289,9 @@ class CrimeIndex:
             ),
             offenses=offenses,
             cfg=cfg,
+            projection=projection,
+            vocabulary=vocabulary,
+            city_slug=city_slug,
         )
 
     def cells(
@@ -282,7 +316,9 @@ class CrimeIndex:
         Returns the cells and the radius actually used, so the client can draw
         the hexagons at the right size.
         """
-        radius = radius_m or choose_radius(min_lat, min_lon, max_lat, max_lon)
+        radius = radius_m or choose_radius(
+            min_lat, min_lon, max_lat, max_lon, self.projection
+        )
         if self.count == 0:
             return [], radius
 
@@ -333,7 +369,7 @@ class CrimeIndex:
         cells: list[CrimeCell] = []
         for cq, cr, members, intensity in raw:
             cx, cy = axial_center(cq, cr, radius)
-            clat, clon = to_wgs84(cx, cy)
+            clat, clon = self.projection.to_wgs84(cx, cy)
 
             member_offenses = self.offense_ids[members]
             member_weights = self.weight[members]
@@ -352,7 +388,7 @@ class CrimeIndex:
             breakdown = [
                 OffenseBreakdown(
                     offense=self.offenses[oid],
-                    display=readable_offense(self.offenses[oid], self.cfg),
+                    display=readable_offense(self.offenses[oid], self.vocabulary),
                     count=int(counts[oid]),
                     category=self.categories[oid],
                     share=round(contribution[oid] / total_weight, 4),
@@ -397,11 +433,22 @@ class CrimeIndex:
             is_night=self.is_night,
             timestamps=self.timestamps,
             offenses=np.array(self.offenses, dtype=object),
+            projection=np.array(
+                [self.projection.origin_lat, self.projection.origin_lon]
+            ),
+            # The city slug, so a loaded index reads its offence codes through
+            # the vocabulary they were written with rather than the default
+            # city's — which would label every NYPD offence by its raw code.
+            city=np.array(self.city_slug),
         )
 
     @classmethod
     def load(cls, path) -> CrimeIndex:
+        from ..cities import CITIES  # noqa: PLC0415 — avoids an import cycle
+
         z = np.load(path, allow_pickle=True)
+        slug = str(z["city"]) if "city" in z else DC.slug
+        city = CITIES.get(slug, DC)
         return cls(
             lat=z["lat"],
             lon=z["lon"],
@@ -410,4 +457,11 @@ class CrimeIndex:
             is_night=z["is_night"],
             timestamps=z["timestamps"],
             offenses=[str(s) for s in z["offenses"]],
+            projection=(
+                Projection(float(z["projection"][0]), float(z["projection"][1]))
+                if "projection" in z
+                else None
+            ),
+            vocabulary=city.crime_vocabulary,
+            city_slug=city.slug,
         )

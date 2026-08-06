@@ -17,7 +17,34 @@ class Coordinate(BaseModel):
     lon: float = Field(..., ge=-180, le=180)
 
 
+class CityModel(BaseModel):
+    """One city this server knows about."""
+
+    slug: str
+    name: str
+    region: str
+    centerLat: float
+    centerLon: float
+    # [minLat, minLon, maxLat, maxLon]
+    bbox: list[float]
+    timezone: str
+    # Whether it has been built. A configured-but-unbuilt city is still listed
+    # so the app can say what is missing rather than pretending it is not a
+    # city at all.
+    available: bool = True
+    # Whether it is currently resident in memory. Cities load on first use, so
+    # a request for one that is not loaded is several seconds slower.
+    loaded: bool = False
+
+
+class CitiesResponse(BaseModel):
+    cities: list[CityModel]
+    defaultCity: str
+
+
 class RouteRequest(BaseModel):
+    # Which city's graph to route on. Omit for the server's default.
+    city: str | None = None
     origin: Coordinate
     destination: Coordinate
     destinationName: str = "your destination"
@@ -108,6 +135,7 @@ class RouteResponse(BaseModel):
     isNight: bool
     # The window actually used, after snapping the request to a built one.
     crimeWindowDays: int = 0
+    city: str = ""
     generatedAt: datetime
     # Present when the request succeeded but something was degraded, e.g.
     # transit was asked for but no GTFS feed is loaded.
@@ -196,6 +224,8 @@ class MetaResponse(BaseModel):
     # Selectable crime lookback windows, in days, and which one is default.
     crimeWindows: list[int] = []
     defaultCrimeWindow: int = 0
+    city: str = ""
+    cityName: str = ""
     bbox: list[float]
 
 

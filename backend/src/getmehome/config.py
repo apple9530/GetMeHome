@@ -9,7 +9,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+from .cities import DEFAULT_CITY, BBox, get_city  # noqa: F401 — re-exported
 
 # --------------------------------------------------------------------------
 # Paths
@@ -21,76 +22,45 @@ DATA_DIR = Path(os.environ.get("GETMEHOME_DATA_DIR", BACKEND_ROOT / "data"))
 RAW_DIR = DATA_DIR / "raw"
 BUILD_DIR = DATA_DIR / "build"
 
-GRAPH_FILE = BUILD_DIR / "dc_graph.npz"
-GRAPH_META_FILE = BUILD_DIR / "dc_graph_meta.json"
-TRANSIT_FILE = BUILD_DIR / "dc_transit.pkl"
+# Build artefacts are per-city, under data/<slug>/build. Filenames are the
+# same in every city so nothing has to know a slug to find a file — the city
+# is the directory, which also means two cities cannot overwrite each other.
+GRAPH_NAME = "graph.npz"
+GRAPH_META_NAME = "graph_meta.json"
+TRANSIT_NAME = "transit.pkl"
 # Incident points kept for the map's crime grid. The graph bakes crime into
 # per-segment scores, which cannot be un-mixed back into individual
 # incidents, so the raw points are carried separately for the overlay.
-CRIME_POINTS_FILE = BUILD_DIR / "crime_points.npz"
+CRIME_POINTS_NAME = "crime_points.npz"
 # Named places extracted from OSM, for the search box.
-PLACES_FILE = BUILD_DIR / "places.json"
+PLACES_NAME = "places.json"
+CAMERAS_NAME = "cameras.json"
 
 # --------------------------------------------------------------------------
-# Study area — Washington, DC (plus a small collar so routes near the border
-# do not dead-end at the district line).
+# Where and what
+#
+# The study area, the projection origin and every upstream data source now
+# live in `cities.py`, one record per city. What stays here is the part that
+# does not vary between them: the shape of the safety model and its weights.
 # --------------------------------------------------------------------------
 
+# Kept for the geocoder's viewbox and for anything that still wants a single
+# default extent. Prefer `city.bbox` — this is the default city's, no more.
+DC_BBOX = get_city(DEFAULT_CITY).bbox
+DC_TIMEZONE = get_city(DEFAULT_CITY).timezone
 
-@dataclass(frozen=True)
-class BBox:
-    min_lat: float
-    min_lon: float
-    max_lat: float
-    max_lon: float
-
-    def contains(self, lat: float, lon: float) -> bool:
-        return (
-            self.min_lat <= lat <= self.max_lat and self.min_lon <= lon <= self.max_lon
-        )
-
-    @property
-    def center(self) -> tuple[float, float]:
-        return ((self.min_lat + self.max_lat) / 2, (self.min_lon + self.max_lon) / 2)
-
-
-DC_BBOX = BBox(min_lat=38.7800, min_lon=-77.1400, max_lat=39.0100, max_lon=-76.8900)
-
-# Timetables are published in local time. Comparing a GTFS departure against a
-# UTC clock is off by four or five hours depending on the season, which shows
-# up as a departure board that is empty all evening.
-DC_TIMEZONE = ZoneInfo("America/New_York")
-
-# --------------------------------------------------------------------------
-# Upstream data sources
-# --------------------------------------------------------------------------
-
-DDOT_STREETLIGHTS_URL = (
-    "https://maps2.dcgis.dc.gov/dcgis/rest/services/DDOT/Streetlights/MapServer"
-)
-
-# MPD publishes one feature layer per year plus a rolling 30-day layer. The
-# ingester discovers the layer index at runtime rather than hardcoding it,
-# because DC renumbers the layers when they roll the year over.
-MPD_CRIME_SERVICE_URL = (
-    "https://maps2.dcgis.dc.gov/dcgis/rest/services/FEEDS/MPD/MapServer"
-)
-
-# Public mirror of the DC OSM extract. Any .osm.pbf covering the bbox works.
-OSM_EXTRACT_URL = (
-    "https://download.geofabrik.de/north-america/us/district-of-columbia-latest.osm.pbf"
-)
-
-WMATA_GTFS_URL = "https://api.wmata.com/gtfs/bus-gtfs-static.zip"
-WMATA_RAIL_GTFS_URL = "https://api.wmata.com/gtfs/rail-gtfs-static.zip"
 WMATA_API_KEY = os.environ.get("WMATA_API_KEY", "")
+# The MTA's GTFS-Realtime feeds no longer require a key for most endpoints,
+# but the subway ones are still served through an API gateway that accepts
+# one. Sending it when present costs nothing and raises the rate limit.
+MTA_API_KEY = os.environ.get("MTA_API_KEY", "")
 
 # Nominatim is used for geocoding. Self-host or swap for another provider in
 # production; the public instance rate-limits aggressively.
 GEOCODER_URL = os.environ.get(
     "GETMEHOME_GEOCODER_URL", "https://nominatim.openstreetmap.org"
 )
-GEOCODER_USER_AGENT = "GetMeHome/1.0 (safety routing for Washington DC)"
+GEOCODER_USER_AGENT = "GetMeHome/1.0 (safety routing for US cities)"
 
 # Public origin, e.g. https://getmehome.example.com. Used to build the ETA
 # share link, which is the one URL this service hands to someone else and so
@@ -177,101 +147,15 @@ class LightingConfig:
 class CrimeConfig:
     """Parameters for the crime-density model."""
 
-    # Severity in [0, 1] per MPD OFFENSE value. These are the weights that
-    # decide how much each crime type moves the risk needle.
-    #
-    # The gap between the violent and property groups is deliberately wide.
-    # A stolen car and a sexual assault are not different points on one scale
-    # of "how bad" — for someone deciding which street to walk down at night
-    # they are barely the same kind of information. Property crime is left
-    # non-zero because a street with a lot of it is usually a street with
-    # little passive supervision, which is a weak but real signal.
-    severity: dict[str, float] = field(
-        default_factory=lambda: {
-            # Violent and sexual offences.
-            "HOMICIDE": 1.00,
-            "SEX ABUSE": 1.00,
-            "ASSAULT W/DANGEROUS WEAPON": 0.90,
-            "ROBBERY": 0.85,
-            # Property offences.
-            "ARSON": 0.25,
-            "BURGLARY": 0.15,
-            "MOTOR VEHICLE THEFT": 0.08,
-            "THEFT F/AUTO": 0.05,
-            "THEFT/OTHER": 0.05,
-        }
-    )
+    # The offence vocabulary — severity, pedestrian relevance, display names
+    # and categories — is *not* here. It is per city, on `City.crime_vocabulary`,
+    # because MPD and NYPD publish different offence strings for different
+    # legal categories. One shared table would fall through to the default
+    # weight for every offence in the other city and turn the crime surface
+    # into a population-density map.
     default_severity: float = 0.15
-
-    # Readable names for MPD's offence codes.
-    #
-    # The raw values are database codes — "THEFT F/AUTO", "ASSAULT
-    # W/DANGEROUS WEAPON" — and no amount of automatic title-casing turns
-    # those into English. Mapped here rather than in the app so the same
-    # wording is used everywhere and one file holds the vocabulary.
-    display_name: dict[str, str] = field(
-        default_factory=lambda: {
-            "HOMICIDE": "Homicide",
-            "SEX ABUSE": "Sexual offense",
-            "ASSAULT W/DANGEROUS WEAPON": "Assault with a weapon",
-            "ROBBERY": "Robbery",
-            "ARSON": "Arson",
-            "BURGLARY": "Burglary",
-            "MOTOR VEHICLE THEFT": "Vehicle theft",
-            "THEFT F/AUTO": "Theft from a vehicle",
-            "THEFT/OTHER": "Theft",
-        }
-    )
-
-    # Broad grouping, used to label and order what the map's crime grid shows.
-    # Keeping this separate from the numeric weight means the UI can say
-    # "3 violent" without re-deriving that from a severity threshold.
-    category: dict[str, str] = field(
-        default_factory=lambda: {
-            "HOMICIDE": "violent",
-            "ASSAULT W/DANGEROUS WEAPON": "violent",
-            "ROBBERY": "violent",
-            "SEX ABUSE": "sexual",
-            "ARSON": "property",
-            "BURGLARY": "property",
-            "MOTOR VEHICLE THEFT": "property",
-            "THEFT F/AUTO": "property",
-            "THEFT/OTHER": "property",
-        }
-    )
-    default_category: str = "other"
-
-    @property
-    def serious_categories(self) -> frozenset[str]:
-        """Categories counted as violent for the UI's headline figure."""
-        return frozenset({"violent", "sexual"})
-
-    # How much each offence type bears on the safety of someone *walking past*
-    # the location. A burglary is serious but is an indoor property crime and
-    # says less about street risk than a street robbery does.
-    pedestrian_relevance: dict[str, float] = field(
-        default_factory=lambda: {
-            "HOMICIDE": 1.00,
-            "SEX ABUSE": 1.00,
-            "ASSAULT W/DANGEROUS WEAPON": 1.00,
-            "ROBBERY": 1.00,
-            "ARSON": 0.35,
-            "BURGLARY": 0.25,
-            "MOTOR VEHICLE THEFT": 0.45,
-            "THEFT F/AUTO": 0.50,
-            "THEFT/OTHER": 0.60,
-        }
-    )
     default_relevance: float = 0.5
-
-    # Weapon multipliers from the MPD METHOD field.
-    method_multiplier: dict[str, float] = field(
-        default_factory=lambda: {
-            "GUN": 1.40,
-            "KNIFE": 1.20,
-            "OTHERS": 1.00,
-        }
-    )
+    default_category: str = "other"
 
     # Selectable lookback windows, in days. The user picks one and only
     # incidents inside it count, for both routing and the map.
@@ -304,6 +188,11 @@ class CrimeConfig:
     normalisation_percentile: float = 97.0
 
     sample_spacing_m: float = 25.0
+
+    @property
+    def serious_categories(self) -> frozenset[str]:
+        """Categories counted as violent for the UI's headline figure."""
+        return frozenset({"violent", "sexual"})
 
 
 @dataclass(frozen=True)

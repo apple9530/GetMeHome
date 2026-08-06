@@ -11,16 +11,15 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
+from ..cities import CITIES, DEFAULT_CITY, City, get_city
 from ..config import (
-    DC_BBOX,
-    DC_TIMEZONE,
     GEOCODER_URL,
     GEOCODER_USER_AGENT,
     PUBLIC_BASE_URL,
 )
 from ..daylight import is_night as compute_is_night
 from ..geo import simplify_polyline
-from ..ingest.wmata_live import station_code
+from ..live.wmata import station_code
 from ..places import parse_address, street_match
 from ..routing.multimodal import Itinerary, plan
 from ..safety.cameras import cameras_in_bbox
@@ -38,6 +37,8 @@ from ..transit_board import (
 from .schemas import (
     CameraModel,
     CameraResponse,
+    CitiesResponse,
+    CityModel,
     CrimeCellModel,
     CrimeGridResponse,
     DepartureModel,
@@ -62,7 +63,7 @@ from .schemas import (
     TripStopModel,
     VehiclePosition,
 )
-from .state import get_state, load_state
+from .state import get_state, preload_from_env, states
 
 log = logging.getLogger("getmehome.api")
 
@@ -77,12 +78,24 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s"
     )
+    # Cities load on first request. Preloading is opt-in because holding
+    # every city resident costs the memory of the largest one per city, and a
+    # deployment serving one of them should not pay for the others.
     try:
-        load_state()
-    except FileNotFoundError as exc:
+        preload_from_env()
+    except Exception as exc:  # noqa: BLE001 — must not stop the app booting
+        log.error("preload failed: %s", exc)
+
+    built = [c.slug for c in states().available()]
+    if built:
+        log.info("cities built and ready: %s", ", ".join(built))
+    else:
         # Start anyway so /health can report the problem rather than the
         # container crash-looping with the reason buried in logs.
-        log.error("%s", exc)
+        log.error(
+            "No city has been built. Run:\n"
+            "    cd backend && python -m getmehome.graph.build --city dc"
+        )
     yield
 
 
@@ -182,14 +195,47 @@ def _serialise(itinerary: Itinerary, index: int) -> ItineraryModel:
     )
 
 
+@app.get("/cities", response_model=CitiesResponse)
+def cities() -> CitiesResponse:
+    """Which cities this server can route in, and which are ready.
+
+    The app calls this before anything else. A city that is configured but not
+    built is still listed, marked unavailable — that is a deployment state
+    worth showing rather than a city that silently does not exist.
+    """
+    store = states()
+    return CitiesResponse(
+        cities=[
+            CityModel(
+                slug=city.slug,
+                name=city.name,
+                region=city.region,
+                centerLat=round(city.center[0], 6),
+                centerLon=round(city.center[1], 6),
+                bbox=city.bbox.as_list(),
+                timezone=city.timezone_name,
+                available=store.is_built(city),
+                loaded=store.is_loaded(city),
+            )
+            for city in CITIES.values()
+        ],
+        defaultCity=DEFAULT_CITY,
+    )
+
+
 @app.get("/health")
-def health() -> dict:
+def health(city: str | None = Query(None)) -> dict:
     try:
-        state = get_state()
-    except RuntimeError:
-        return {"status": "no_graph", "detail": "graph not built; run the build step"}
+        state = get_state(city)
+    except (RuntimeError, FileNotFoundError, KeyError) as exc:
+        return {
+            "status": "no_graph",
+            "detail": str(exc),
+            "citiesBuilt": [c.slug for c in states().available()],
+        }
     return {
         "status": "ok",
+        "city": state.city.slug,
         "segments": state.graph.n_segments,
         "streetlights": state.graph.meta.get("n_lights", 0),
         "crimeIncidents": state.crime.count if state.crime else 0,
@@ -200,8 +246,8 @@ def health() -> dict:
 
 
 @app.get("/meta", response_model=MetaResponse)
-def meta() -> MetaResponse:
-    state = _require_state()
+def meta(city: str | None = Query(None)) -> MetaResponse:
+    state = _require_state(city)
     m = state.graph.meta
     network = state.transit.network if state.transit else None
     return MetaResponse(
@@ -217,26 +263,63 @@ def meta() -> MetaResponse:
         crimeHistoryYears=m.get("crime_history_years", 0),
         crimeWindows=list(state.graph.crime_windows),
         defaultCrimeWindow=state.graph.resolved_window(None) or 0,
-        bbox=m.get(
-            "bbox",
-            [DC_BBOX.min_lat, DC_BBOX.min_lon, DC_BBOX.max_lat, DC_BBOX.max_lon],
-        ),
+        city=state.city.slug,
+        cityName=state.city.name,
+        bbox=m.get("bbox", state.city.bbox.as_list()),
     )
 
 
-def _require_state():
+def _off_map(lat: float, lon: float, city: City, which: str) -> str:
+    """Why a point could not be snapped, in terms the user can act on.
+
+    The commonest cause by far is having the wrong city selected, and "no
+    walkable street near there" is a poor way to say so.
+    """
+    from ..cities import city_for_point  # noqa: PLC0415
+
+    elsewhere = city_for_point(lat, lon)
+    if elsewhere is not None and elsewhere.slug != city.slug:
+        return (
+            f"{which} point is in {elsewhere.name}, but {city.name} is "
+            f"selected. Switch cities to route there."
+        )
+    if not city.bbox.contains(lat, lon):
+        return f"{which} point is outside the {city.name} map."
+    return f"{which} point is not near any walkable street in {city.name}."
+
+
+def _require_city(slug: str | None) -> City:
     try:
-        return get_state()
-    except RuntimeError as exc:
+        return get_city(slug)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _require_state(slug: str | None = None):
+    """State for a city, loading it on first use.
+
+    The first request for an unloaded city pays several seconds while its
+    graph comes off disk. That is deliberate — see `api/state.py` — and it is
+    why the app asks for a city up front rather than on the first route.
+    """
+    city = _require_city(slug)
+    try:
+        return get_state(city.slug)
+    except FileNotFoundError as exc:
         raise HTTPException(
             status_code=503,
-            detail="Routing graph is not loaded. Run the build step first.",
+            detail=(
+                f"{city.name} has not been built yet. Run: "
+                f"python -m getmehome.graph.build --city {city.slug}"
+            ),
         ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/route", response_model=RouteResponse)
 def route(request: RouteRequest) -> RouteResponse:
-    state = _require_state()
+    state = _require_state(request.city)
     notices: list[str] = []
 
     when = request.departAt or datetime.now(UTC)
@@ -253,13 +336,18 @@ def route(request: RouteRequest) -> RouteResponse:
     if origin is None:
         raise HTTPException(
             status_code=422,
-            detail="Start point is not near any walkable street in the DC area.",
+            detail=_off_map(request.origin.lat, request.origin.lon, state.city, "Start"),
         )
     destination = state.index.snap(request.destination.lat, request.destination.lon)
     if destination is None:
         raise HTTPException(
             status_code=422,
-            detail="Destination is not near any walkable street in the DC area.",
+            detail=_off_map(
+                request.destination.lat,
+                request.destination.lon,
+                state.city,
+                "Destination",
+            ),
         )
 
     window = state.graph.resolved_window(request.crimeWindowDays)
@@ -316,6 +404,7 @@ def route(request: RouteRequest) -> RouteResponse:
         itineraries=[_serialise(it, i) for i, it in enumerate(itineraries)],
         isNight=night,
         crimeWindowDays=window or 0,
+        city=state.city.slug,
         generatedAt=datetime.now(UTC),
         notices=notices,
     )
@@ -327,9 +416,10 @@ def cameras(
     minLon: float = Query(...),
     maxLat: float = Query(...),
     maxLon: float = Query(...),
+    city: str | None = Query(None),
 ) -> CameraResponse:
     """ALPR cameras in a bounding box, for the map overlay."""
-    state = _require_state()
+    state = _require_state(city)
     hits = cameras_in_bbox(
         state.cameras, minLat, minLon, maxLat, maxLon, limit=MAX_OVERLAY_CAMERAS + 1
     )
@@ -359,6 +449,7 @@ def crime_grid(
     maxLon: float = Query(...),
     nightOnly: bool = Query(False),
     windowDays: int | None = Query(None),
+    city: str | None = Query(None),
 ) -> CrimeGridResponse:
     """Incidents binned into hexagons over a bounding box.
 
@@ -368,7 +459,7 @@ def crime_grid(
     cost, and unlike a coloured street they can be tapped for the underlying
     incident counts.
     """
-    state = _require_state()
+    state = _require_state(city)
     # Snap to a built window so the map and the route agree on the period,
     # even if the client asks for one the graph was not built with.
     window = state.graph.resolved_window(windowDays) if windowDays else None
@@ -394,7 +485,9 @@ def crime_grid(
                 centerLat=round(c.center_lat, 6),
                 centerLon=round(c.center_lon, 6),
                 vertices=_flatten_pairs(
-                    hex_vertices(c.center_lat, c.center_lon, radius)
+                    hex_vertices(
+                        c.center_lat, c.center_lon, radius, state.graph.projection
+                    )
                 ),
                 total=c.total,
                 intensity=c.intensity,
@@ -427,6 +520,7 @@ def geocode(
     limit: int = Query(12, le=25),
     lat: float | None = Query(None),
     lon: float | None = Query(None),
+    city: str | None = Query(None),
 ):
     """Search for a place by name.
 
@@ -442,10 +536,13 @@ def geocode(
     everything except the building, because the local index would return four
     plausible-looking near-misses and push the real answer to fifth.
     """
+    selected = _require_city(city)
     state = None
     try:
-        state = get_state()
-    except RuntimeError:
+        state = get_state(selected.slug)
+    except (RuntimeError, FileNotFoundError):
+        # Search still works through the external geocoder; it is just less
+        # forgiving. Better than refusing to search at all.
         pass
 
     near = (lat, lon) if lat is not None and lon is not None else None
@@ -480,7 +577,7 @@ def geocode(
     )
 
     if len(results) < 4 or (query.is_address and not exact_found):
-        for row in _nominatim(q, limit):
+        for row in _nominatim(q, limit, selected):
             add(row)
 
     if query.is_address:
@@ -521,7 +618,7 @@ def _rank_addresses(query, results: list[GeocodeResult]) -> list[GeocodeResult]:
     return sorted(results, key=rank)
 
 
-def _nominatim(q: str, limit: int) -> list[GeocodeResult]:
+def _nominatim(q: str, limit: int, city: City) -> list[GeocodeResult]:
     """Query the external geocoder, returning nothing if it is unavailable.
 
     Deliberately non-fatal: local results are usually enough, and a geocoder
@@ -531,7 +628,12 @@ def _nominatim(q: str, limit: int) -> list[GeocodeResult]:
         "q": q,
         "format": "jsonv2",
         "limit": limit,
-        "viewbox": f"{DC_BBOX.min_lon},{DC_BBOX.max_lat},{DC_BBOX.max_lon},{DC_BBOX.min_lat}",
+        # Bounded to the selected city. Without this, "Union Station" in New
+        # York returns Washington's, which is a very confusing answer to get.
+        "viewbox": (
+            f"{city.bbox.min_lon},{city.bbox.max_lat},"
+            f"{city.bbox.max_lon},{city.bbox.min_lat}"
+        ),
         "bounded": 1,
         "addressdetails": 1,
     }
@@ -618,14 +720,15 @@ def reverse(lat: float = Query(...), lon: float = Query(...)):
 # --------------------------------------------------------------------------
 
 
-def _local_now() -> datetime:
-    """Now in DC's local time.
+def _local_now(city: City) -> datetime:
+    """Now in a city's local time.
 
     Timetables are in local time, and comparing a GTFS departure against a UTC
     clock is off by four or five hours depending on the season — which reads
-    as the board being empty all evening.
+    as the board being empty all evening. Per city rather than fixed, because
+    the next city added will not be Eastern.
     """
-    return datetime.now(DC_TIMEZONE)
+    return datetime.now(city.timezone)
 
 
 def _seconds_since_midnight(when: datetime) -> int:
@@ -637,8 +740,8 @@ def _clock(seconds: int) -> str:
     return f"{total // 3600:02d}:{total % 3600 // 60:02d}"
 
 
-def _require_transit():
-    state = _require_state()
+def _require_transit(slug: str | None = None):
+    state = _require_state(slug)
     if state.transit is None:
         raise HTTPException(
             status_code=503,
@@ -655,6 +758,7 @@ def transit_stops(
     maxLon: float = Query(...),
     railOnly: bool = Query(False),
     limit: int = Query(400, le=800),
+    city: str | None = Query(None),
 ) -> TransitStopsResponse:
     """Metro and bus stops in a viewport.
 
@@ -662,7 +766,7 @@ def transit_stops(
     thousand bus stops, and a client that silently receives four hundred of
     them has no way to tell the user that is what happened.
     """
-    state = _require_transit()
+    state = _require_transit(city)
     found, truncated = stops_in_bbox(
         state.transit.network,
         minLat, minLon, maxLat, maxLon,
@@ -690,6 +794,7 @@ def transit_stops(
 def stop_board(
     stop_id: str,
     limit: int = Query(15, le=40),
+    city: str | None = Query(None),
 ) -> StopBoardResponse:
     """The next departures from a stop.
 
@@ -697,14 +802,14 @@ def stop_board(
     Live predictions are folded in on top where WMATA has them, which is the
     next half hour or so and only while service is running.
     """
-    state = _require_transit()
+    state = _require_transit(city)
     network = state.transit.network
 
     indices = resolve_stop(network, stop_id)
     if not indices:
         raise HTTPException(status_code=404, detail="No such stop.")
 
-    now = _local_now()
+    now = _local_now(state.city)
     now_s = _seconds_since_midnight(now)
     scheduled = departures(network, stop_id, after_s=now_s, limit=limit)
 
@@ -713,13 +818,15 @@ def stop_board(
 
     live_note = ""
     if not state.live.enabled:
-        live_note = "Live arrivals need a WMATA API key; showing the timetable."
+        # Each provider phrases its own reason: a missing WMATA key and a
+        # missing protobuf dependency need different things done about them.
+        live_note = state.live.disabled_reason
     else:
         predictions = _predictions_for(state, network, indices, mode)
         if predictions:
             scheduled = attach_live(scheduled, predictions, now_s)
         else:
-            live_note = "No live arrivals right now; showing the timetable."
+            live_note = state.live.disabled_reason
 
     return StopBoardResponse(
         stopId=stop_id,
@@ -767,6 +874,7 @@ def transit_trip(
     trip_id: str,
     fromStop: str = Query("", description="Stop the user is waiting at"),
     vehicleId: str = Query("", description="Live vehicle id from the board"),
+    city: str | None = Query(None),
 ) -> TripDetailResponse:
     """A vehicle's whole journey: every call, its time, and where it is now.
 
@@ -777,7 +885,7 @@ def transit_trip(
     so its position is interpolated from the next station's prediction and
     flagged as an estimate everywhere it appears.
     """
-    state = _require_transit()
+    state = _require_transit(city)
     network = state.transit.network
 
     vehicle = state.live.bus_position_for_trip(trip_id) if state.live.enabled else None
@@ -792,7 +900,7 @@ def transit_trip(
     if detail is None:
         raise HTTPException(status_code=404, detail="No such trip.")
 
-    now_s = _seconds_since_midnight(_local_now())
+    now_s = _seconds_since_midnight(_local_now(state.city))
     position: VehiclePosition | None = None
     note = ""
 
@@ -814,7 +922,7 @@ def transit_trip(
         note = (
             "No live position for this vehicle; times shown are scheduled."
             if state.live.enabled
-            else "Live tracking needs a WMATA API key; times shown are scheduled."
+            else state.live.disabled_reason
         )
 
     return TripDetailResponse(
