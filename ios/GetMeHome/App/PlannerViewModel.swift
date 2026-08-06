@@ -30,9 +30,14 @@ final class PlannerViewModel {
     /// server is unreachable is unusable.
     private(set) var searchError: String?
 
-    /// Both ends of the route. Origin defaults to wherever the user is, which
-    /// is the overwhelmingly common case, but is fully editable.
-    var origin: RoutePoint = .currentLocation
+    /// Both ends of the route, both starting empty.
+    ///
+    /// The origin used to default to "current location". It read as the app
+    /// having already decided where you are starting from, and clearing a
+    /// prefilled field is more work than filling an empty one. "Current
+    /// location" is the first row of the suggestion list for either end, which
+    /// is a tap either way.
+    var origin: RoutePoint?
     var destination: RoutePoint?
 
     var editingField: RouteField = .destination
@@ -45,7 +50,7 @@ final class PlannerViewModel {
     /// The shared version deadlocked: the text field only existed while
     /// focused, and focus could not be granted to a field that did not yet
     /// exist, so neither row could ever be edited.
-    var originText: String = RoutePoint.currentLocation.displayName {
+    var originText: String = "" {
         didSet { handleTextChange(.origin, from: oldValue, to: originText) }
     }
 
@@ -62,12 +67,25 @@ final class PlannerViewModel {
     }
 
     var canRoute: Bool {
-        destination != nil
+        origin != nil && destination != nil
     }
 
     /// The name shown on the destination marker and spoken on arrival.
     var destinationName: String {
         destination?.displayName ?? "your destination"
+    }
+
+    /// Whether either end depends on a live location fix — which is when a
+    /// missing location permission is worth mentioning.
+    var usesCurrentLocation: Bool {
+        origin?.isCurrentLocation == true || destination?.isCurrentLocation == true
+    }
+
+    func point(for field: RouteField) -> RoutePoint? {
+        switch field {
+        case .origin: origin
+        case .destination: destination
+        }
     }
 
     let places: PlaceStore
@@ -121,7 +139,7 @@ final class PlannerViewModel {
         searchError = nil
         searchTask?.cancel()
 
-        let hasCommittedValue = (field == .origin) ? true : destination != nil
+        let hasCommittedValue = (field == .origin) ? origin != nil : destination != nil
         if hasCommittedValue {
             withoutSearching {
                 switch field {
@@ -143,7 +161,7 @@ final class PlannerViewModel {
         withoutSearching {
             switch field {
             case .origin:
-                originText = origin.displayName
+                originText = origin?.displayName ?? ""
             case .destination:
                 destinationText = destination?.displayName ?? ""
             }
@@ -151,9 +169,7 @@ final class PlannerViewModel {
     }
 
     func swapEndpoints() {
-        let previousOrigin = origin
-        origin = destination ?? .currentLocation
-        destination = previousOrigin
+        (origin, destination) = (destination, origin)
         syncFieldText()
         Task { await requestRoutes() }
     }
@@ -161,7 +177,7 @@ final class PlannerViewModel {
     func clear(_ field: RouteField) {
         switch field {
         case .origin:
-            origin = .currentLocation
+            origin = nil
         case .destination:
             destination = nil
             itineraries = []
@@ -183,10 +199,10 @@ final class PlannerViewModel {
         syncFieldText()
         clearSearch()
 
-        // Picking a start with no end yet is a natural point to move on
+        // Filling one end without the other is a natural point to move on
         // rather than to route.
-        if editingField == .origin, destination == nil {
-            editingField = .destination
+        guard canRoute else {
+            editingField = (origin == nil) ? .origin : .destination
             return
         }
         await requestRoutes()
@@ -200,8 +216,8 @@ final class PlannerViewModel {
         syncFieldText()
         clearSearch()
 
-        if field == .origin, destination == nil {
-            editingField = .destination
+        guard canRoute else {
+            editingField = (origin == nil) ? .origin : .destination
             return
         }
         await requestRoutes()
@@ -210,7 +226,7 @@ final class PlannerViewModel {
     /// Bring both text fields back in line with the committed endpoints.
     private func syncFieldText() {
         withoutSearching {
-            originText = origin.displayName
+            originText = origin?.displayName ?? ""
             destinationText = destination?.displayName ?? ""
         }
     }
@@ -318,7 +334,7 @@ final class PlannerViewModel {
     // MARK: - Routing
 
     func requestRoutes() async {
-        guard let destination else { return }
+        guard let origin, let destination else { return }
 
         phase = .routing
         errorMessage = nil
@@ -367,7 +383,7 @@ final class PlannerViewModel {
     }
 
     func refreshRoutes() async {
-        guard destination != nil, phase == .showingOptions else { return }
+        guard canRoute, phase == .showingOptions else { return }
         await requestRoutes()
     }
 
@@ -375,7 +391,7 @@ final class PlannerViewModel {
     /// fires while a request is in flight, since the user has just changed the
     /// question being asked.
     func rescoreForTimeOfDay() async {
-        guard destination != nil else { return }
+        guard canRoute else { return }
         await requestRoutes()
     }
 
@@ -385,15 +401,15 @@ final class PlannerViewModel {
     /// route scored on thirty days would be actively misleading.
     func changeCrimeWindow() async {
         invalidateOverlays()
-        guard destination != nil else { return }
+        guard canRoute else { return }
         await requestRoutes()
     }
 
     func cancelRouting() {
         itineraries = []
         notices = []
+        origin = nil
         destination = nil
-        origin = .currentLocation
         selectedItineraryID = nil
         editingField = .destination
         phase = .idle

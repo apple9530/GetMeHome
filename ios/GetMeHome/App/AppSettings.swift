@@ -111,6 +111,12 @@ final class AppSettings {
         didSet { defaults.set(showCrimeGrid, forKey: Keys.showCrimeGrid) }
     }
 
+    /// Every Metro and bus stop, drawn on the map and tappable for its
+    /// timetable.
+    var showTransitStops: Bool {
+        didSet { defaults.set(showTransitStops, forKey: Keys.showTransitStops) }
+    }
+
     /// Restricts the crime grid to evening and midnight shift incidents.
     var crimeGridNightOnly: Bool {
         didSet { defaults.set(crimeGridNightOnly, forKey: Keys.crimeGridNight) }
@@ -149,6 +155,7 @@ final class AppSettings {
         static let avoidCameras = "avoidCameras"
         static let showCameras = "showCameraOverlay"
         static let showCrimeGrid = "showCrimeGrid"
+        static let showTransitStops = "showTransitStops"
         static let crimeGridNight = "crimeGridNightOnly"
         static let includeTransit = "includeTransit"
         static let voice = "voiceGuidance"
@@ -162,6 +169,7 @@ final class AppSettings {
         avoidCameras = defaults.bool(forKey: Keys.avoidCameras)
         showCameraOverlay = defaults.bool(forKey: Keys.showCameras)
         showCrimeGrid = defaults.bool(forKey: Keys.showCrimeGrid)
+        showTransitStops = defaults.bool(forKey: Keys.showTransitStops)
         crimeGridNightOnly = defaults.bool(forKey: Keys.crimeGridNight)
         // These two default to on, so read them only if previously written.
         includeTransit = defaults.object(forKey: Keys.includeTransit) as? Bool ?? true

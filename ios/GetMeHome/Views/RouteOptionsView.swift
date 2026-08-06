@@ -8,15 +8,50 @@ struct RouteOptionsView: View {
     var onStart: () -> Void
     var onCancel: () -> Void
 
+    /// Which kind of journey is on screen.
+    ///
+    /// Walking and transit itineraries used to share one scrolling list, which
+    /// put a 40-minute walk and a 12-minute Metro ride in the same column of
+    /// near-identical cards. They answer different questions and are not really
+    /// alternatives to each other, so they get their own tab.
+    enum Mode: Hashable {
+        case walk
+        case transit
+
+        var title: String {
+            switch self {
+            case .walk: "Walk"
+            case .transit: "Transit"
+            }
+        }
+
+        var symbolName: String {
+            switch self {
+            case .walk: "figure.walk"
+            case .transit: "tram.fill"
+            }
+        }
+    }
+
+    @State private var mode: Mode = .walk
+
     var body: some View {
         @Bindable var planner = planner
 
         VStack(spacing: 0) {
             header
 
+            if hasBothModes {
+                modePicker
+            }
+
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    ForEach(planner.itineraries) { itinerary in
+                    if visibleItineraries.isEmpty {
+                        emptyModeNotice
+                    }
+
+                    ForEach(visibleItineraries) { itinerary in
                         RouteCard(
                             itinerary: itinerary,
                             isSelected: itinerary.id == planner.selectedItinerary?.id,
@@ -45,13 +80,83 @@ struct RouteOptionsView: View {
             startButton
         }
         .background(.regularMaterial)
+        .onAppear { selectInitialMode() }
+        .onChange(of: planner.itineraries) { _, _ in selectInitialMode() }
+        .onChange(of: mode) { _, _ in selectFirstOfMode() }
+    }
+
+    // MARK: - Mode tabs
+
+    private var walkItineraries: [Itinerary] {
+        planner.itineraries.filter { !$0.isTransit }
+    }
+
+    private var transitItineraries: [Itinerary] {
+        planner.itineraries.filter(\.isTransit)
+    }
+
+    private var visibleItineraries: [Itinerary] {
+        mode == .walk ? walkItineraries : transitItineraries
+    }
+
+    private var hasBothModes: Bool {
+        !walkItineraries.isEmpty && !transitItineraries.isEmpty
+    }
+
+    private var modePicker: some View {
+        Picker("Journey type", selection: $mode.animation(.snappy)) {
+            ForEach([Mode.walk, Mode.transit], id: \.self) { option in
+                Label(
+                    "\(option.title) (\(option == .walk ? walkItineraries.count : transitItineraries.count))",
+                    systemImage: option.symbolName
+                )
+                .tag(option)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal)
+        .padding(.bottom, 10)
+    }
+
+    private var emptyModeNotice: some View {
+        Label(
+            mode == .transit
+                ? "No transit route found for this trip."
+                : "No walking route found for this trip.",
+            systemImage: "info.circle"
+        )
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+    }
+
+    /// Open on whichever tab holds the currently selected route, so a fresh
+    /// set of results never lands on an empty tab.
+    private func selectInitialMode() {
+        if let selected = planner.selectedItinerary {
+            mode = selected.isTransit ? .transit : .walk
+        } else if walkItineraries.isEmpty {
+            mode = .transit
+        } else {
+            mode = .walk
+        }
+    }
+
+    /// Switching tabs selects that tab's best option, so the map and the Start
+    /// button always match what is on screen.
+    private func selectFirstOfMode() {
+        guard let first = visibleItineraries.first else { return }
+        if planner.selectedItinerary?.isTransit != (mode == .transit) {
+            planner.selectedItineraryID = first.id
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 HStack(spacing: 5) {
-                    Text(planner.origin.displayName)
+                    Text(planner.origin?.displayName ?? "Start")
                         .lineLimit(1)
                     Image(systemName: "arrow.right")
                         .font(.caption2)
@@ -100,9 +205,6 @@ struct RouteOptionsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: settings.crimeWindow) { _, _ in
-                    Task { await planner.changeCrimeWindow() }
-                }
             }
 
             Text(settings.crimeWindow.caption)
@@ -129,9 +231,6 @@ struct RouteOptionsView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .onChange(of: settings.timeOfDay) { _, _ in
-                Task { await planner.rescoreForTimeOfDay() }
-            }
 
             HStack(spacing: 5) {
                 Image(systemName: planner.isNight ? "moon.stars.fill" : "sun.max.fill")

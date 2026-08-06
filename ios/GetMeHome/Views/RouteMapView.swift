@@ -10,6 +10,7 @@ struct RouteMapView: View {
     @Binding var cameraPosition: MapCameraPosition
 
     @State private var selectedCamera: ALPRCamera?
+    @State private var showLayers = false
     /// The map controls are placed by hand rather than by `.mapControls`, so
     /// they need the map's scope to stay wired to it.
     @Namespace private var mapScope
@@ -61,6 +62,9 @@ struct RouteMapView: View {
                 handleTap(at: coordinate)
             }
             .overlay(alignment: .topTrailing) { controls }
+            .sheet(isPresented: $showLayers) {
+                MapLayersView()
+            }
             .sheet(item: $selectedCamera) { camera in
                 CameraDetailSheet(camera: camera)
                     .presentationDetents([.height(300)])
@@ -80,6 +84,7 @@ struct RouteMapView: View {
     /// deliberately extends under.
     private var controls: some View {
         VStack(spacing: 10) {
+            layersButton
             MapUserLocationButton(scope: mapScope)
             MapScaleView(scope: mapScope)
         }
@@ -90,6 +95,40 @@ struct RouteMapView: View {
         // added on top because the map itself ignores it.
         .padding(.top, 14)
         .safeAreaPadding(.top)
+    }
+
+    /// One button for every overlay, styled to sit with MapKit's own controls.
+    ///
+    /// Badged when something is on, so the map never shows a layer the user
+    /// has forgotten they enabled without there being a visible reason for it.
+    private var layersButton: some View {
+        Button {
+            showLayers = true
+        } label: {
+            Image(systemName: activeLayers > 0 ? "square.3.layers.3d.top.filled" : "square.3.layers.3d")
+                .font(.system(size: 17))
+                .frame(width: 44, height: 44)
+                .background(.regularMaterial, in: Circle())
+                .overlay(alignment: .topTrailing) {
+                    if activeLayers > 0 {
+                        Text("\(activeLayers)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 16, height: 16)
+                            .background(Color.accentColor, in: Circle())
+                            .offset(x: 2, y: -2)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            activeLayers == 0 ? "Map layers" : "Map layers, \(activeLayers) on"
+        )
+    }
+
+    private var activeLayers: Int {
+        [settings.showTransitStops, settings.showCrimeGrid, settings.showCameraOverlay]
+            .filter { $0 }.count
     }
 
     private var selectedCellBinding: Binding<CrimeCell?> {
@@ -143,8 +182,8 @@ struct RouteMapView: View {
 
     @MapContentBuilder
     private var endpointMarkers: some MapContent {
-        if let coordinate = planner.origin.fixedCoordinate {
-            Annotation(planner.origin.displayName, coordinate: coordinate) {
+        if let origin = planner.origin, let coordinate = origin.fixedCoordinate {
+            Annotation(origin.displayName, coordinate: coordinate) {
                 Image(systemName: "a.circle.fill")
                     .font(.title2)
                     .foregroundStyle(.white, Color.accentColor)

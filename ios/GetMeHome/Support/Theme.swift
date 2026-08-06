@@ -38,6 +38,10 @@ enum Theme {
     }
 
     static let cameraTint = Color(red: 0.55, green: 0.28, blue: 0.75)
+    static let transitTint = Color(red: 0.13, green: 0.50, blue: 0.78)
+    /// Metro and bus want telling apart at a glance on a crowded map.
+    static let railTint = Color(red: 0.13, green: 0.42, blue: 0.72)
+    static let busTint = Color(red: 0.18, green: 0.58, blue: 0.42)
     static let seriousCrimeTint = Color(red: 0.82, green: 0.22, blue: 0.18)
 
     /// Colour per offence category.

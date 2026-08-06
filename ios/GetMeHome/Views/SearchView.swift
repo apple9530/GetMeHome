@@ -1,10 +1,12 @@
 import SwiftUI
 import UIKit
 
-/// Endpoint entry (A → B) and the quick preference toggles.
+/// Endpoint entry: A → B, the suggestion list, and a way into Settings.
+///
+/// The preference chips that used to sit under the fields have moved to the
+/// map's layers button, so this panel does one thing.
 struct SearchView: View {
     @Environment(PlannerViewModel.self) private var planner
-    @Environment(AppSettings.self) private var settings
     @Environment(LocationService.self) private var location
 
     @State private var showSettings = false
@@ -30,14 +32,14 @@ struct SearchView: View {
             .padding(.horizontal)
             .padding(.top, 12)
 
-            if location.accessDenied, planner.origin.isCurrentLocation {
+            if location.accessDenied, planner.usesCurrentLocation {
                 permissionNotice
             }
 
             if focusedField != nil {
                 results
-            } else {
-                quickToggles
+            } else if !planner.canRoute {
+                hint
             }
         }
         .padding(.bottom, 12)
@@ -76,9 +78,9 @@ struct SearchView: View {
             VStack(spacing: 6) {
                 endpointRow(
                     field: .origin,
-                    placeholder: "Choose starting point",
+                    placeholder: "Starting point",
                     text: $planner.originText,
-                    icon: planner.origin.symbolName
+                    icon: planner.origin?.symbolName ?? "magnifyingglass"
                 )
                 endpointRow(
                     field: .destination,
@@ -120,7 +122,7 @@ struct SearchView: View {
                 .font(.caption)
                 .frame(width: 14)
                 .foregroundStyle(
-                    field == .origin && planner.origin.isCurrentLocation
+                    planner.point(for: field)?.isCurrentLocation == true
                         ? Color.accentColor
                         : .secondary
                 )
@@ -340,60 +342,24 @@ struct SearchView: View {
         }
     }
 
-    // MARK: - Toggles
+    // MARK: - Hint
 
-    private var quickToggles: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                toggleChip(
-                    "Transit", systemImage: "tram.fill", isOn: settings.includeTransit
-                ) {
-                    settings.includeTransit.toggle()
-                    Task { await planner.refreshRoutes() }
-                }
-                toggleChip(
-                    "Avoid Flock Cameras", systemImage: "camera.fill",
-                    isOn: settings.avoidCameras
-                ) {
-                    settings.avoidCameras.toggle()
-                    Task { await planner.refreshRoutes() }
-                }
-                toggleChip(
-                    "Show Flock Cameras", systemImage: "eye.fill",
-                    isOn: settings.showCameraOverlay
-                ) {
-                    settings.showCameraOverlay.toggle()
-                    planner.invalidateOverlays()
-                }
-                toggleChip(
-                    "Crime grid", systemImage: "hexagon.fill",
-                    isOn: settings.showCrimeGrid
-                ) {
-                    settings.showCrimeGrid.toggle()
-                    planner.invalidateOverlays()
-                }
-            }
-            .padding(.horizontal)
-            .padding(.top, 10)
-        }
-    }
-
-    private func toggleChip(
-        _ title: String, systemImage: String, isOn: Bool, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    isOn ? Color.accentColor : Color(.secondarySystemBackground),
-                    in: Capsule()
-                )
-                .foregroundStyle(isOn ? .white : .primary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isOn ? [.isSelected] : [])
+    /// Shown while an end is still missing.
+    ///
+    /// Both fields start empty now, and an empty panel with no instruction is
+    /// the kind of thing that reads as broken rather than as waiting.
+    private var hint: some View {
+        Label(
+            planner.destination == nil
+                ? "Where are you going?"
+                : "Set a starting point — “Current location” is at the top of the list.",
+            systemImage: "magnifyingglass"
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal)
+        .padding(.top, 12)
     }
 
     private var permissionNotice: some View {
@@ -451,49 +417,21 @@ struct SettingsView: View {
                     )
                 }
 
-                Section("Routing") {
+                Section {
+                    // Public transport is on by default and stays on unless
+                    // it is turned off here — it used to be a chip on the home
+                    // screen, which made an always-wanted option feel like a
+                    // decision to make on every trip.
                     Toggle("Include public transport", isOn: $settings.includeTransit)
-                    Toggle("Avoid Flock Cameras", isOn: $settings.avoidCameras)
                     Toggle("Voice guidance", isOn: $settings.voiceGuidance)
-                }
-
-                Section {
-                    Picker("Crime data from the last", selection: $settings.crimeWindow) {
-                        ForEach(CrimeWindow.allCases) { window in
-                            Text(window.label).tag(window)
-                        }
-                    }
                 } header: {
-                    Text("Crime data")
+                    Text("Routing")
                 } footer: {
                     Text(
-                        "Only incidents inside this window count — towards the "
-                            + "map and towards route scores alike. A shorter "
-                            + "window reacts faster to a changing area; a longer "
-                            + "one is steadier."
+                        "Map layers, crime data and camera avoidance are behind "
+                            + "the layers button on the map."
                     )
                 }
-                .onChange(of: settings.crimeWindow) { _, _ in
-                    Task { await planner.changeCrimeWindow() }
-                }
-
-                Section {
-                    Toggle("Show Flock Cameras", isOn: $settings.showCameraOverlay)
-                    Toggle("Show crime grid", isOn: $settings.showCrimeGrid)
-                    if settings.showCrimeGrid {
-                        Toggle("Night incidents only", isOn: $settings.crimeGridNightOnly)
-                    }
-                } header: {
-                    Text("Map overlays")
-                } footer: {
-                    Text(
-                        "The crime grid bins reported incidents into hexagons. "
-                            + "Tap one to see what was reported there."
-                    )
-                }
-                .onChange(of: settings.showCrimeGrid) { _, _ in planner.invalidateOverlays() }
-                .onChange(of: settings.crimeGridNightOnly) { _, _ in planner.invalidateOverlays() }
-                .onChange(of: settings.showCameraOverlay) { _, _ in planner.invalidateOverlays() }
 
                 Section {
                     TextField("Server URL", text: $settings.serverURLString)

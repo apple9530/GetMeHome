@@ -85,6 +85,28 @@ struct RootView: View {
             guard let first = itineraries.first else { return }
             withAnimation { fit(to: first) }
         }
+        // Settings that change what is drawn or what was asked for are
+        // reacted to here, once, rather than in each control. The same
+        // preference is deliberately offered in more than one place — the
+        // crime window belongs both beside the routes and beside the map
+        // layer it governs — and a handler per control means two refetches
+        // for one change.
+        .onChange(of: settings.crimeWindow) { _, _ in
+            Task { await planner.changeCrimeWindow() }
+        }
+        .onChange(of: settings.timeOfDay) { _, _ in
+            Task { await planner.rescoreForTimeOfDay() }
+        }
+        .onChange(of: settings.showCrimeGrid) { _, _ in planner.invalidateOverlays() }
+        .onChange(of: settings.crimeGridNightOnly) { _, _ in planner.invalidateOverlays() }
+        .onChange(of: settings.showCameraOverlay) { _, _ in planner.invalidateOverlays() }
+        .onChange(of: settings.showTransitStops) { _, _ in planner.invalidateOverlays() }
+        .onChange(of: settings.avoidCameras) { _, _ in
+            Task { await planner.refreshRoutes() }
+        }
+        .onChange(of: settings.includeTransit) { _, _ in
+            Task { await planner.refreshRoutes() }
+        }
         .fullScreenCover(isPresented: isNavigating) {
             if let navigationModel {
                 NavigationScreen(model: navigationModel) {
