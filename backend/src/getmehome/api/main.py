@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..config import DC_BBOX, GEOCODER_URL, GEOCODER_USER_AGENT
 from ..daylight import is_night as compute_is_night
 from ..geo import simplify_polyline
+from ..places import leading_house_number, normalise
 from ..routing.multimodal import Itinerary, plan
 from ..safety.cameras import cameras_in_bbox
 from ..safety.hexgrid import hex_vertices
@@ -409,10 +410,16 @@ def geocode(
                 )
             )
 
-    # Only reach outward when the local index came up short. Nominatim is
-    # rate-limited, so calling it on every keystroke gets the app throttled
-    # within a few words.
-    if len(results) < 4:
+    # Reach outward when the local index came up short, or when a house
+    # number went unanswered. OSM's address coverage is good in DC but not
+    # complete, and returning only the street for "801 3rd St NW" is no use —
+    # 3rd Street NW runs for miles.
+    number = leading_house_number(q)
+    unmatched_number = number is not None and not any(
+        normalise(r.name).split()[:1] == [number] for r in results
+    )
+
+    if len(results) < 4 or unmatched_number:
         for row in _nominatim(q, limit):
             key = (int(row.lat * 20000), int(row.lon * 20000))
             if key in seen:

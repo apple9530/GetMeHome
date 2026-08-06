@@ -96,8 +96,31 @@ CATEGORY_WEIGHT: dict[str, float] = {
     "civic": 0.72,
     "office": 0.62,
     "street": 0.58,
+    "address": 0.55,
     "other": 0.50,
 }
+
+# How hard to push addresses down when the query has no house number, and up
+# when it has one. Without this, typing "3rd st nw" surfaces an arbitrary
+# doorway on that street above the street itself, and typing "801 3rd st nw"
+# leaves the street — which is miles long and not an answer — on top.
+ADDRESS_WITHOUT_NUMBER_PENALTY = 0.35
+ADDRESS_WITH_NUMBER_BONUS = 1.6
+
+
+
+def leading_house_number(text: str) -> str | None:
+    """A bare leading number, which marks the query as a street address.
+
+    Tested against the raw text rather than the normalised form. Normalising
+    collapses ordinals — "3rd" becomes "3" — so checking afterwards would read
+    "3rd St NW" as house number 3 and demote the street the user asked for.
+    A real house number has no ordinal suffix.
+    """
+    cleaned = _NON_WORD.sub(" ", text.strip().lower()).split()
+    if not cleaned:
+        return None
+    return cleaned[0] if cleaned[0].isdigit() else None
 
 
 def normalise(text: str) -> str:
@@ -210,6 +233,10 @@ class PlaceIndex:
         if not candidates:
             return []
 
+        # A leading number means the user wants a specific doorway, not the
+        # street it is on.
+        house_number = leading_house_number(query)
+
         scored: list[ScoredPlace] = []
         for i in candidates:
             text = self._normalised[i]
@@ -219,6 +246,16 @@ class PlaceIndex:
 
             place = self.places[i]
             score *= 0.75 + 0.25 * CATEGORY_WEIGHT.get(place.category, 0.5)
+
+            if place.category == "address":
+                if house_number is None:
+                    score *= ADDRESS_WITHOUT_NUMBER_PENALTY
+                elif text.split()[:1] == [house_number]:
+                    score *= ADDRESS_WITH_NUMBER_BONUS
+            elif house_number is not None and place.category == "street":
+                # The street is still worth offering as a fallback, but it
+                # should not outrank the address that was actually asked for.
+                score *= 0.6
 
             distance = None
             if near is not None:

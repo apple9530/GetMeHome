@@ -22,7 +22,7 @@ Worth being straight about this before you invest time in it.
 
 | Part | State |
 |---|---|
-| Backend routing, safety model, transit, crime grid, search, API | Written and covered by 105 passing tests |
+| Backend routing, safety model, transit, crime grid, search, API | Written and covered by 110 passing tests |
 | `RouteTracker` navigation maths | Algorithm validated independently against hand-computed cases |
 | iOS app | Compiles and launches; UI beyond that not exercised here |
 | The DC data build (`make graph`) | Streetlight + crime ingestion fixed against the real feeds |
@@ -325,6 +325,11 @@ we control the matching, so it can be forgiving in the ways that count.
   fallback below the exact and prefix tiers.
 - **Proximity breaks ties**, which DC needs: there is a 14th Street in more
   than one quadrant.
+- **Street addresses resolve to a building, not a street.** OSM carries DC's
+  address points, so "801 3rd St NW" finds that doorway rather than offering
+  3rd Street NW, which runs for miles. A leading house number is detected on
+  the raw text rather than the normalised form, since normalising collapses
+  "3rd" to "3" and would otherwise read an ordinal street as a house number.
 
 Matching is tiered rather than one fuzzy ratio, so an exact match always beats
 a prefix match, which always beats a merely similar one. A bare similarity
@@ -380,7 +385,7 @@ backend/
     routing/             A*, alternatives, RAPTOR, multimodal
     nav/                 turn-by-turn instructions
     api/                 FastAPI app
-  tests/                 105 tests, no data build required
+  tests/                 110 tests, no data build required
 ios/
   project.yml            XcodeGen spec
   GetMeHome/

@@ -24,6 +24,11 @@ DC_PLACES = [
     Place("Columbia Heights Metro Station", 38.9286, -77.0325, "station", ""),
     Place("Rhode Island Avenue NE", 38.9210, -76.9950, "street", "Washington, DC"),
     Place("The Black Cat", 38.9175, -77.0316, "nightlife", "1811 14th Street NW"),
+    # Address points, as imported into OSM from DC's address repository.
+    Place("801 3rd Street Northwest", 38.8993, -77.0158, "address", "Washington, DC"),
+    Place("815 3rd Street Northwest", 38.8996, -77.0158, "address", "Washington, DC"),
+    Place("3rd Street Northwest", 38.9000, -77.0160, "street", "Washington, DC"),
+    Place("801 Pennsylvania Avenue NW", 38.8950, -77.0230, "address", "Washington, DC"),
 ]
 
 
@@ -187,3 +192,71 @@ def index_fixture() -> PlaceIndex:
     if _INDEX is None:
         _INDEX = PlaceIndex(places=list(DC_PLACES)).build()
     return _INDEX
+
+
+# ---------------------------------------------------------------------------
+# Street addresses
+# ---------------------------------------------------------------------------
+
+
+def test_house_number_detection_ignores_ordinals():
+    """"3rd" is not house number 3.
+
+    Normalisation collapses ordinals, so this has to be judged on the raw
+    text — otherwise "3rd St NW" reads as a house number and the street the
+    user asked for gets demoted.
+    """
+    from getmehome.places import leading_house_number
+
+    assert leading_house_number("801 3rd St NW") == "801"
+    assert leading_house_number("1600 Pennsylvania Ave") == "1600"
+    assert leading_house_number("3rd st nw") is None
+    assert leading_house_number("14th Street") is None
+    assert leading_house_number("madams organ") is None
+    assert leading_house_number("") is None
+
+
+def test_street_address_finds_the_building_not_the_street():
+    """The case that prompted this: 3rd Street NW is miles long."""
+    results = names(index_fixture().search("801 3rd St NW"))
+    assert results[0] == "801 3rd Street Northwest"
+    # The street is still offered, just not first.
+    assert "3rd Street Northwest" in results
+
+
+def test_a_bare_street_query_still_ranks_the_street_first():
+    """Without a number, an arbitrary doorway must not outrank the street."""
+    results = names(index_fixture().search("3rd st nw"))
+    assert results[0] == "3rd Street Northwest"
+
+
+def test_house_number_matters_more_than_the_street_name():
+    """A partial address still leads with the right number."""
+    results = names(index_fixture().search("801 3rd"))
+    assert results[0] == "801 3rd Street Northwest"
+
+
+def test_addresses_and_names_are_both_indexed(tmp_path):
+    """One object can be findable by name and by address."""
+    from getmehome.ingest.osm import place_entries
+
+    entries = dict(
+        (name, category)
+        for name, category in place_entries({
+            "name": "Madam's Organ",
+            "amenity": "bar",
+            "addr:housenumber": "2461",
+            "addr:street": "18th Street NW",
+        })
+    )
+    assert entries["Madam's Organ"] == "nightlife"
+    assert entries["2461 18th Street NW"] == "address"
+
+    # An address with no name yields just the address.
+    only_address = place_entries(
+        {"addr:housenumber": "801", "addr:street": "3rd Street NW"}
+    )
+    assert only_address == [("801 3rd Street NW", "address")]
+
+    # A housenumber with no street is not an address.
+    assert place_entries({"addr:housenumber": "801"}) == []

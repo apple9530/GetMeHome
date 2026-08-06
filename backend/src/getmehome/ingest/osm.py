@@ -125,6 +125,31 @@ def place_category(tags: dict[str, str]) -> str | None:
     return None
 
 
+def place_entries(tags: dict[str, str]) -> list[tuple[str, str]]:
+    """The (name, category) pairs an object should be searchable under.
+
+    An object can yield two: a bar called Madam's Organ at 2461 18th Street
+    is worth finding by either, and someone typing a street address does not
+    necessarily know what is there. The street name alone is not enough —
+    3rd Street NW runs for miles, so "801 3rd St NW" has to resolve to a
+    point, not a line.
+    """
+    entries: list[tuple[str, str]] = []
+
+    name = tags.get("name", "").strip()
+    if name:
+        category = place_category(tags)
+        if category:
+            entries.append((name, category))
+
+    number = tags.get("addr:housenumber", "").strip()
+    street = tags.get("addr:street", "").strip()
+    if number and street:
+        entries.append((f"{number} {street}", "address"))
+
+    return entries
+
+
 def place_context(tags: dict[str, str]) -> str:
     """Second line for a search result: an address if there is one."""
     parts = []
@@ -156,15 +181,16 @@ def read_osm(
     for obj in osmium.FileProcessor(str(path)):
         if obj.is_node():
             tags = _tags_to_dict(obj)
-            name = tags.get("name", "").strip()
-            if name:
-                category = place_category(tags)
-                if category and category != "street":
-                    lat, lon = obj.location.lat, obj.location.lon
-                    if bbox is None or bbox.contains(lat, lon):
+            entries = place_entries(tags)
+            if entries:
+                lat, lon = obj.location.lat, obj.location.lon
+                if bbox is None or bbox.contains(lat, lon):
+                    for entry_name, category in entries:
+                        if category == "street":
+                            continue  # a node is never a street
                         places.append(
                             Place(
-                                name=name,
+                                name=entry_name,
                                 lat=lat,
                                 lon=lon,
                                 category=category,
@@ -258,11 +284,9 @@ def read_osm(
 def _record_way_place(
     obj, tags: dict[str, str], name: str, places: list[Place], bbox: BBox | None
 ) -> None:
-    """Index a named way as a place, positioned at its centroid."""
-    if not name:
-        return
-    category = place_category(tags)
-    if not category:
+    """Index a way as a searchable place, positioned at its centroid."""
+    entries = place_entries(tags)
+    if not entries:
         return
 
     lats, lons = [], []
@@ -280,16 +304,18 @@ def _record_way_place(
     if bbox is not None and not bbox.contains(lat, lon):
         return
 
-    places.append(
-        Place(
-            name=name,
-            lat=lat,
-            lon=lon,
-            category=category,
-            context=place_context(tags),
-            osm_id=f"way/{obj.id}",
+    context = place_context(tags)
+    for entry_name, category in entries:
+        places.append(
+            Place(
+                name=entry_name,
+                lat=lat,
+                lon=lon,
+                category=category,
+                context=context,
+                osm_id=f"way/{obj.id}",
+            )
         )
-    )
 
 
 def _emit(
