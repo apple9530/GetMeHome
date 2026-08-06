@@ -322,9 +322,12 @@ provisioning profile expires every 7 days and you will need to re-install.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /route` | Plan itineraries. Body takes origin, destination, modes, `avoidCameras`, optional `departAt` and `forceNight`. |
+| `POST /route` | Plan itineraries. Body takes origin, destination, modes, `avoidCameras`, optional `departAt`, `forceNight` and `crimeWindowDays`. |
 | `GET /cameras` | Flock/ALPR cameras in a bbox, for the overlay. |
-| `GET /crime/grid` | Incidents binned into hexagons over a bbox, for the map overlay. |
+| `GET /crime/grid` | Incidents binned into hexagons over a bbox. Takes `windowDays` and `nightOnly`. |
+| `GET /transit/stops` | Metro and bus stops in a bbox, capped and reporting whether it capped. |
+| `GET /transit/stop/{id}/board` | The next departures from a stop, with live predictions folded in. |
+| `GET /transit/trip/{pattern}/{trip}` | A vehicle's whole journey: every call, its time, and where it is now. |
 | `GET /geocode` · `GET /reverse` | Fuzzy place search over the local OSM index, topped up by Nominatim. |
 | `GET /meta` · `GET /health` | Build provenance and liveness. |
 
@@ -340,6 +343,73 @@ curl -X POST localhost:8000/route -H 'content-type: application/json' -d '{
   "forceNight": true
 }'
 ```
+
+---
+
+## Transit stops, timetables and live vehicles
+
+The router already holds a full GTFS timetable in memory to plan journeys with.
+A departure board is the same data asked a different question — not "how do I
+get from A to B" but "what leaves from here, and where does it go" — so the
+stop overlay costs no extra memory and no extra build step.
+
+Tapping a stop gives its next departures; tapping a departure gives that
+vehicle's whole journey, its position, and its time at every remaining stop.
+
+Three things that had to be got right:
+
+- **A station is not a platform.** WMATA rail publishes two boardable
+  platforms per station. Drawn as they come, that is two markers a few metres
+  apart with half the departures each. Platforms collapse onto their parent
+  station and a board unions them.
+- **The map cannot draw eleven thousand bus stops.** Responses are capped, and
+  the cap is *reported* rather than hidden — the app says "zoom in for every
+  stop" instead of implying that four hundred is all of them. When the cap
+  bites, rail survives first, then the busiest interchanges.
+- **Midnight.** GTFS times run past 24:00, so a trip leaving at 25:10 is
+  yesterday's trip still out on the road. A board reads the schedule twice:
+  once as today, once as yesterday shifted back a day. Without the second pass
+  the last departures of the night are invisible for the hour before midnight.
+
+### What is live, and what is only claimed to be
+
+Scheduled and live are different claims and the app never blurs them. A
+timetable time is what is *meant* to happen; a prediction is what the operator
+currently expects. Every row says which it is showing.
+
+The two modes differ because the upstream data does:
+
+| | Position | Per-stop times |
+|---|---|---|
+| **Bus** | Reported by WMATA — drawn where it is | Schedule shifted by the reported deviation |
+| **Metro** | *Estimated*, and labelled as such | Schedule, plus live predictions per station |
+
+WMATA's `TrainPositions` reports a **track-circuit id**, not a coordinate.
+Resolving one needs the standard-routes circuit map, a separate feed and a
+substantial amount of matching. So a train's position is interpolated between
+the station it last left and the one it is next predicted at — accurate to a
+few hundred metres mid-run and exact at a platform, which is enough for "is my
+train nearly here". It is drawn with a dashed ring and captioned as an estimate
+wherever it appears.
+
+Identifying *which* train is the harder half. Rail predictions carry a
+`TrainId`; when the departure board matches one to the departure you tapped,
+that id is traced across every station on the route and the one reporting the
+fewest minutes places the train. Without an id there is nothing to trace, so no
+dot is drawn — guessing would put a marker on the map that means nothing.
+
+Predictions are matched to scheduled departures on route and time, not on trip
+id, because WMATA's real-time trip ids do not reliably correspond to the static
+feed's. The matching is prediction-first: walking the departures and giving
+each its nearest prediction lets the 08:00 bus claim a prediction that plainly
+belongs to the 08:10 one.
+
+Everything real-time **fails soft**. No `WMATA_API_KEY`, a rate limit, or an
+outage degrades the app to scheduled times — which is what it showed before any
+of this existed. It must never turn a working timetable into an error page.
+
+> Set `WMATA_API_KEY` to enable live data. Without it the boards still work
+> from the timetable and say so.
 
 ---
 

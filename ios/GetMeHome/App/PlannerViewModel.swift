@@ -23,6 +23,10 @@ final class PlannerViewModel {
     private(set) var cameras: [ALPRCamera] = []
     private(set) var crimeCells: [CrimeCell] = []
     private(set) var crimeCellRadius: Double = 0
+    private(set) var transitStops: [TransitStop] = []
+    /// True when the viewport holds more stops than were returned, so the map
+    /// can say "zoom in" rather than implying this is all of them.
+    private(set) var transitStopsTruncated = false
     private(set) var errorMessage: String?
     private(set) var isSearching = false
     /// Shown inline beneath the field. Kept apart from `errorMessage`,
@@ -43,6 +47,7 @@ final class PlannerViewModel {
     var editingField: RouteField = .destination
     var selectedItineraryID: String?
     var selectedCell: CrimeCell?
+    var selectedStop: TransitStop?
 
     /// Text bindings for the two fields.
     ///
@@ -428,9 +433,13 @@ final class PlannerViewModel {
     // MARK: - Overlays
 
     func refreshOverlays(for bounds: MapBounds) {
-        guard settings.showCameraOverlay || settings.showCrimeGrid else {
+        guard settings.showCameraOverlay
+            || settings.showCrimeGrid
+            || settings.showTransitStops
+        else {
             cameras = []
             crimeCells = []
+            transitStops = []
             return
         }
         // Panning fires continuously; only refetch on a real viewport change.
@@ -463,6 +472,18 @@ final class PlannerViewModel {
             } else {
                 crimeCells = []
                 selectedCell = nil
+            }
+
+            if settings.showTransitStops {
+                if let response = try? await client.transitStops(in: bounds),
+                   !Task.isCancelled {
+                    transitStops = response.stops
+                    transitStopsTruncated = response.truncated
+                }
+            } else {
+                transitStops = []
+                transitStopsTruncated = false
+                selectedStop = nil
             }
         }
     }

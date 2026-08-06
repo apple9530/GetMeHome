@@ -40,6 +40,10 @@ struct RouteMapView: View {
                     cameraOverlay
                 }
 
+                if settings.showTransitStops {
+                    transitStops
+                }
+
                 endpointMarkers
             }
             .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
@@ -62,6 +66,7 @@ struct RouteMapView: View {
                 handleTap(at: coordinate)
             }
             .overlay(alignment: .topTrailing) { controls }
+            .overlay(alignment: .top) { truncationNotice }
             .sheet(isPresented: $showLayers) {
                 MapLayersView()
             }
@@ -73,8 +78,30 @@ struct RouteMapView: View {
                 CrimeCellSheet(cell: cell, radius: planner.crimeCellRadius)
                     .presentationDetents([.height(420), .medium])
             }
+            .sheet(item: selectedStopBinding) { stop in
+                TransitStopView(stop: stop)
+                    .presentationDetents([.medium, .large])
+            }
         }
         .mapScope(mapScope)
+    }
+
+    /// Said out loud rather than implied.
+    ///
+    /// DC has roughly eleven thousand bus stops and the server caps what it
+    /// returns. Showing four hundred of them without a word would read as the
+    /// map being complete, which is a quieter and worse failure than saying so.
+    @ViewBuilder
+    private var truncationNotice: some View {
+        if settings.showTransitStops, planner.transitStopsTruncated {
+            Label("Zoom in for every stop", systemImage: "arrow.up.left.and.arrow.down.right")
+                .font(.caption2.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: Capsule())
+                .padding(.top, 14)
+                .safeAreaPadding(.top)
+        }
     }
 
     // MARK: - Controls
@@ -134,6 +161,41 @@ struct RouteMapView: View {
     private var selectedCellBinding: Binding<CrimeCell?> {
         @Bindable var planner = planner
         return $planner.selectedCell
+    }
+
+    private var selectedStopBinding: Binding<TransitStop?> {
+        @Bindable var planner = planner
+        return $planner.selectedStop
+    }
+
+    // MARK: - Transit stops
+
+    /// Metro stations and bus stops.
+    ///
+    /// Rail is drawn larger and labelled; buses are small unlabelled dots.
+    /// There are two orders of magnitude more bus stops than stations, and
+    /// labelling them all turns a map of the city into a wall of text.
+    @MapContentBuilder
+    private var transitStops: some MapContent {
+        ForEach(planner.transitStops) { stop in
+            Annotation(
+                stop.isRail ? stop.name : "",
+                coordinate: stop.coordinate,
+                anchor: .center
+            ) {
+                Image(systemName: stop.symbolName)
+                    .font(.system(size: stop.isRail ? 11 : 8))
+                    .foregroundStyle(.white)
+                    .padding(stop.isRail ? 5 : 3)
+                    .background(
+                        stop.isRail ? Theme.railTint : Theme.busTint,
+                        in: Circle()
+                    )
+                    .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+                    .onTapGesture { planner.selectedStop = stop }
+            }
+            .annotationTitles(stop.isRail ? .automatic : .hidden)
+        }
     }
 
     // MARK: - Route rendering
@@ -290,9 +352,26 @@ struct RouteMapView: View {
             selectedCamera = camera
             return
         }
+        // Stops before cells, for the same reason: a stop is a small target
+        // sitting on top of a very large one.
+        if settings.showTransitStops,
+           let stop = nearestStop(to: coordinate, within: 60) {
+            planner.selectedStop = stop
+            return
+        }
         if settings.showCrimeGrid, let cell = cell(containing: coordinate) {
             planner.selectedCell = planner.selectedCell?.id == cell.id ? nil : cell
         }
+    }
+
+    private func nearestStop(
+        to coordinate: CLLocationCoordinate2D, within metres: Double
+    ) -> TransitStop? {
+        let target = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        return planner.transitStops
+            .map { ($0, CLLocation(latitude: $0.lat, longitude: $0.lon).distance(from: target)) }
+            .filter { $0.1 <= metres }
+            .min { $0.1 < $1.1 }?.0
     }
 
     private func nearestCamera(

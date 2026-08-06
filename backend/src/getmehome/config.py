@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # --------------------------------------------------------------------------
 # Paths
@@ -54,6 +55,11 @@ class BBox:
 
 
 DC_BBOX = BBox(min_lat=38.7800, min_lon=-77.1400, max_lat=39.0100, max_lon=-76.8900)
+
+# Timetables are published in local time. Comparing a GTFS departure against a
+# UTC clock is off by four or five hours depending on the season, which shows
+# up as a departure board that is empty all evening.
+DC_TIMEZONE = ZoneInfo("America/New_York")
 
 # --------------------------------------------------------------------------
 # Upstream data sources

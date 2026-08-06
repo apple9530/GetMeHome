@@ -112,6 +112,45 @@ actor RoutingClient {
         return try await get("/crime/grid", query: items)
     }
 
+    // MARK: - Transit
+
+    func transitStops(
+        in region: MapBounds, railOnly: Bool = false
+    ) async throws -> TransitStopsResponse {
+        var items = region.queryItems
+        if railOnly {
+            items.append(URLQueryItem(name: "railOnly", value: "true"))
+        }
+        return try await get("/transit/stops", query: items)
+    }
+
+    func stopBoard(_ stopId: String) async throws -> StopBoard {
+        try await get("/transit/stop/\(encoded(stopId))/board", query: [])
+    }
+
+    func tripDetail(
+        patternId: Int, tripId: String, fromStop: String = "", vehicleId: String = ""
+    ) async throws -> TripDetail {
+        var items: [URLQueryItem] = []
+        if !fromStop.isEmpty {
+            items.append(URLQueryItem(name: "fromStop", value: fromStop))
+        }
+        if !vehicleId.isEmpty {
+            // Lets the server identify *which* train the user is waiting for,
+            // which is the only way it can place one on the map.
+            items.append(URLQueryItem(name: "vehicleId", value: vehicleId))
+        }
+        return try await get(
+            "/transit/trip/\(patternId)/\(encoded(tripId))", query: items
+        )
+    }
+
+    /// GTFS ids are opaque and WMATA's contain slashes and colons, which would
+    /// otherwise be read as extra path components.
+    private func encoded(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? value
+    }
+
     // MARK: - Places
 
     func geocode(

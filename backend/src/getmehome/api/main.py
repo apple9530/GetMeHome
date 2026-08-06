@@ -10,18 +10,29 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..config import DC_BBOX, GEOCODER_URL, GEOCODER_USER_AGENT
+from ..config import DC_BBOX, DC_TIMEZONE, GEOCODER_URL, GEOCODER_USER_AGENT
 from ..daylight import is_night as compute_is_night
 from ..geo import simplify_polyline
+from ..ingest.wmata_live import station_code
 from ..places import parse_address, street_match
 from ..routing.multimodal import Itinerary, plan
 from ..safety.cameras import cameras_in_bbox
 from ..safety.hexgrid import hex_vertices
+from ..transit_board import (
+    RAIL_MODES,
+    attach_live,
+    departures,
+    estimate_rail_position,
+    resolve_stop,
+    stops_in_bbox,
+    trip_detail,
+)
 from .schemas import (
     CameraModel,
     CameraResponse,
     CrimeCellModel,
     CrimeGridResponse,
+    DepartureModel,
     GeocodeResponse,
     GeocodeResult,
     ItineraryModel,
@@ -31,6 +42,12 @@ from .schemas import (
     RouteRequest,
     RouteResponse,
     StepModel,
+    StopBoardResponse,
+    TransitStopModel,
+    TransitStopsResponse,
+    TripDetailResponse,
+    TripStopModel,
+    VehiclePosition,
 )
 from .state import get_state, load_state
 
@@ -581,3 +598,306 @@ def reverse(lat: float = Query(...), lon: float = Query(...)):
             )
         ]
     )
+
+
+# --------------------------------------------------------------------------
+# Transit: stops, departure boards, live vehicles
+# --------------------------------------------------------------------------
+
+
+def _local_now() -> datetime:
+    """Now in DC's local time.
+
+    Timetables are in local time, and comparing a GTFS departure against a UTC
+    clock is off by four or five hours depending on the season — which reads
+    as the board being empty all evening.
+    """
+    return datetime.now(DC_TIMEZONE)
+
+
+def _seconds_since_midnight(when: datetime) -> int:
+    return when.hour * 3600 + when.minute * 60 + when.second
+
+
+def _clock(seconds: int) -> str:
+    total = int(seconds) % 86400
+    return f"{total // 3600:02d}:{total % 3600 // 60:02d}"
+
+
+def _require_transit():
+    state = _require_state()
+    if state.transit is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No transit timetable is loaded. Run `make gtfs` and rebuild.",
+        )
+    return state
+
+
+@app.get("/transit/stops", response_model=TransitStopsResponse)
+def transit_stops(
+    minLat: float = Query(...),
+    minLon: float = Query(...),
+    maxLat: float = Query(...),
+    maxLon: float = Query(...),
+    railOnly: bool = Query(False),
+    limit: int = Query(400, le=800),
+) -> TransitStopsResponse:
+    """Metro and bus stops in a viewport.
+
+    Capped, and the cap is reported rather than hidden: DC has roughly eleven
+    thousand bus stops, and a client that silently receives four hundred of
+    them has no way to tell the user that is what happened.
+    """
+    state = _require_transit()
+    found, truncated = stops_in_bbox(
+        state.transit.network,
+        minLat, minLon, maxLat, maxLon,
+        limit=limit,
+        rail_only=railOnly,
+    )
+    return TransitStopsResponse(
+        stops=[
+            TransitStopModel(
+                id=s.id,
+                name=s.name or "Stop",
+                lat=round(s.lat, 6),
+                lon=round(s.lon, 6),
+                mode=s.mode,
+                routes=s.routes[:12],
+            )
+            for s in found
+        ],
+        total=len(found),
+        truncated=truncated,
+    )
+
+
+@app.get("/transit/stop/{stop_id}/board", response_model=StopBoardResponse)
+def stop_board(
+    stop_id: str,
+    limit: int = Query(15, le=40),
+) -> StopBoardResponse:
+    """The next departures from a stop.
+
+    Scheduled times come from the loaded GTFS feed and are always available.
+    Live predictions are folded in on top where WMATA has them, which is the
+    next half hour or so and only while service is running.
+    """
+    state = _require_transit()
+    network = state.transit.network
+
+    indices = resolve_stop(network, stop_id)
+    if not indices:
+        raise HTTPException(status_code=404, detail="No such stop.")
+
+    now = _local_now()
+    now_s = _seconds_since_midnight(now)
+    scheduled = departures(network, stop_id, after_s=now_s, limit=limit)
+
+    stop = network.stops[indices[0]]
+    mode = scheduled[0].mode if scheduled else "bus"
+
+    live_note = ""
+    if not state.live.enabled:
+        live_note = "Live arrivals need a WMATA API key; showing the timetable."
+    else:
+        predictions = _predictions_for(state, network, indices, mode)
+        if predictions:
+            scheduled = attach_live(scheduled, predictions, now_s)
+        else:
+            live_note = "No live arrivals right now; showing the timetable."
+
+    return StopBoardResponse(
+        stopId=stop_id,
+        stopName=stop.name or "Stop",
+        mode=mode,
+        departures=[
+            DepartureModel(
+                routeName=d.route_name,
+                headsign=d.headsign,
+                mode=d.mode,
+                scheduledTime=_clock(d.departure_s),
+                scheduledMinutes=int(round((d.departure_s - now_s) / 60.0)),
+                liveMinutes=d.live_minutes,
+                patternId=d.pattern_id,
+                tripId=d.trip_id,
+                stopsRemaining=d.stops_remaining,
+                vehicleId=d.vehicle_id,
+            )
+            for d in scheduled
+        ],
+        live=any(d.is_live for d in scheduled),
+        liveNote=live_note,
+    )
+
+
+def _predictions_for(state, network, indices: list[int], mode: str) -> list:
+    """Live predictions for a stop, from whichever WMATA feed applies."""
+    if mode in RAIL_MODES:
+        codes = [
+            code
+            for i in indices
+            if (code := station_code(network.stops[i].stop_id))
+        ]
+        return state.live.rail_predictions(codes)
+
+    out: list = []
+    for i in indices:
+        out.extend(state.live.bus_predictions(network.stops[i].stop_id))
+    return out
+
+
+@app.get("/transit/trip/{pattern_id}/{trip_id}", response_model=TripDetailResponse)
+def transit_trip(
+    pattern_id: int,
+    trip_id: str,
+    fromStop: str = Query("", description="Stop the user is waiting at"),
+    vehicleId: str = Query("", description="Live vehicle id from the board"),
+) -> TripDetailResponse:
+    """A vehicle's whole journey: every call, its time, and where it is now.
+
+    Position handling differs by mode because the upstream data does. A bus
+    reports its coordinates, so it is drawn where it is and its schedule
+    deviation is applied to every remaining call. A train reports a track
+    circuit, which cannot be turned into a coordinate without a separate feed,
+    so its position is interpolated from the next station's prediction and
+    flagged as an estimate everywhere it appears.
+    """
+    state = _require_transit()
+    network = state.transit.network
+
+    vehicle = state.live.bus_position_for_trip(trip_id) if state.live.enabled else None
+    detail = trip_detail(
+        network,
+        pattern_id,
+        trip_id,
+        deviation_s=vehicle.deviation_s if vehicle else 0.0,
+        vehicle_lat=vehicle.lat if vehicle else None,
+        vehicle_lon=vehicle.lon if vehicle else None,
+    )
+    if detail is None:
+        raise HTTPException(status_code=404, detail="No such trip.")
+
+    now_s = _seconds_since_midnight(_local_now())
+    position: VehiclePosition | None = None
+    note = ""
+
+    if vehicle is not None:
+        position = VehiclePosition(
+            lat=round(vehicle.lat, 6), lon=round(vehicle.lon, 6), estimated=False
+        )
+    elif detail.mode in RAIL_MODES and state.live.enabled:
+        estimate = _estimate_train(state, detail, vehicleId, fromStop)
+        if estimate is not None:
+            position = VehiclePosition(
+                lat=round(estimate[0], 6), lon=round(estimate[1], 6), estimated=True
+            )
+            note = (
+                "Train position is estimated from the next station's arrival "
+                "time — WMATA does not publish train coordinates."
+            )
+    if position is None and not note:
+        note = (
+            "No live position for this vehicle; times shown are scheduled."
+            if state.live.enabled
+            else "Live tracking needs a WMATA API key; times shown are scheduled."
+        )
+
+    return TripDetailResponse(
+        patternId=detail.pattern_id,
+        tripId=detail.trip_id,
+        routeName=detail.route_name,
+        headsign=detail.headsign,
+        mode=detail.mode,
+        stops=[
+            TripStopModel(
+                stopId=s.stop_id,
+                name=s.name or "Stop",
+                lat=round(s.lat, 6),
+                lon=round(s.lon, 6),
+                arrivalTime=_clock(s.arrival_s),
+                minutes=int(round((s.arrival_s - now_s) / 60.0)),
+                passed=s.passed,
+            )
+            for s in detail.stops
+        ],
+        polyline=_flatten_pairs([(s.lat, s.lon) for s in detail.stops]),
+        deviationSeconds=round(detail.deviation_s, 1),
+        vehicle=position,
+        liveNote=note,
+    )
+
+
+def _estimate_train(state, detail, vehicle_id: str, from_stop: str):
+    """Interpolate a train's position from where it is next predicted.
+
+    Identifying *which* train is the hard part, and it is worth being precise
+    about how it is done rather than hand-waving it.
+
+    WMATA's rail predictions carry a ``TrainId``. If the departure board
+    matched one to the departure the user tapped, that id is passed back here
+    and the train is located by scanning predictions across every station on
+    the route: the station reporting the smallest number of minutes for that
+    id is the one it is heading to next, which places it on the leg before.
+
+    Without an id there is nothing to trace, and guessing would put a dot on
+    the map that means nothing. In that case no position is returned and the
+    client says so.
+    """
+    codes: dict[str, int] = {}
+    for i, stop in enumerate(detail.stops):
+        code = station_code(stop.stop_id)
+        if code and code not in codes:
+            codes[code] = i
+    if not codes:
+        return None
+
+    predictions = state.live.rail_predictions(list(codes))
+    if not predictions:
+        return None
+
+    # The endpoint returns predictions for all the stations asked about, but
+    # not which station each belongs to, so re-query per station only when an
+    # id has to be traced. One call per station is too many; instead, use the
+    # station the user is standing at as the anchor when there is no id.
+    if not vehicle_id:
+        anchor = codes.get(station_code(from_stop)) if from_stop else None
+        if anchor is None or anchor == 0:
+            return None
+        soonest = min(
+            (p for p in predictions if _same_line(p, detail)),
+            key=lambda p: p.minutes,
+            default=None,
+        )
+        if soonest is None:
+            return None
+        return estimate_rail_position(detail, anchor, float(soonest.minutes))
+
+    best: tuple[int, float] | None = None
+    for code, index in codes.items():
+        if index == 0:
+            continue
+        for prediction in state.live.rail_predictions([code]):
+            if prediction.vehicle_id != vehicle_id:
+                continue
+            if best is None or prediction.minutes < best[1]:
+                best = (index, float(prediction.minutes))
+    if best is None:
+        return None
+    return estimate_rail_position(detail, best[0], best[1])
+
+
+def _same_line(prediction, detail) -> bool:
+    """Whether a rail prediction plausibly belongs to this trip.
+
+    Line code against route name, loosely. WMATA reports "RD" where the feed
+    says "Red", so this compares on leading letters rather than demanding
+    equality, and errs towards accepting: a wrong match moves an estimated
+    dot, while no match removes the feature.
+    """
+    line = (prediction.route_name or "").strip().upper()
+    route = (detail.route_name or "").strip().upper()
+    if not line or not route:
+        return True
+    return line[:2] == route[:2] or route.startswith(line) or line.startswith(route[:2])

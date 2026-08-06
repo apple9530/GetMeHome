@@ -307,3 +307,133 @@ struct ServerMeta: Codable {
     let defaultCrimeWindow: Int?
     let bbox: [Double]
 }
+
+// MARK: - Transit stops, timetables and live vehicles
+
+struct TransitStop: Codable, Hashable, Identifiable {
+    let id: String
+    let name: String
+    let lat: Double
+    let lon: Double
+    /// "metro" | "bus" | "rail" | ...
+    let mode: String
+    let routes: [String]
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
+    var isRail: Bool {
+        ["metro", "rail", "tram", "monorail", "funicular"].contains(mode)
+    }
+
+    var symbolName: String { isRail ? "tram.fill" : "bus.fill" }
+}
+
+struct TransitStopsResponse: Codable {
+    let stops: [TransitStop]
+    let total: Int
+    let truncated: Bool
+}
+
+struct Departure: Codable, Hashable, Identifiable {
+    let routeName: String
+    let headsign: String
+    let mode: String
+    let scheduledTime: String
+    let scheduledMinutes: Int
+    /// The operator's own prediction, where there is one. Nil means the row is
+    /// showing a timetable rather than a live arrival, which the UI says.
+    let liveMinutes: Int?
+    let patternId: Int
+    let tripId: String
+    let stopsRemaining: Int
+    let vehicleId: String
+
+    var id: String { "\(patternId)-\(tripId)-\(scheduledTime)" }
+
+    var isLive: Bool { liveMinutes != nil }
+
+    /// What to show as "when". Live wins when it exists — that is the whole
+    /// point of it — but the scheduled time stays visible alongside so a large
+    /// gap between the two is legible rather than mysterious.
+    var minutes: Int { liveMinutes ?? scheduledMinutes }
+
+    var minutesLabel: String {
+        let value = minutes
+        if value <= 0 { return "Now" }
+        if value == 1 { return "1 min" }
+        return "\(value) min"
+    }
+
+    var isRail: Bool {
+        ["metro", "rail", "tram", "monorail", "funicular"].contains(mode)
+    }
+}
+
+struct StopBoard: Codable {
+    let stopId: String
+    let stopName: String
+    let mode: String
+    let departures: [Departure]
+    let live: Bool
+    let liveNote: String
+}
+
+struct TripStop: Codable, Hashable, Identifiable {
+    let stopId: String
+    let name: String
+    let lat: Double
+    let lon: Double
+    let arrivalTime: String
+    /// Minutes from now; negative once the call is in the past.
+    let minutes: Int
+    let passed: Bool
+
+    var id: String { "\(stopId)-\(arrivalTime)" }
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+}
+
+struct VehiclePosition: Codable, Hashable {
+    let lat: Double
+    let lon: Double
+    /// True when interpolated rather than reported. Trains are always
+    /// estimated — WMATA publishes track circuits, not coordinates — and the
+    /// UI labels them so nobody reads a dot as a measurement.
+    let estimated: Bool
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+}
+
+struct TripDetail: Codable {
+    let patternId: Int
+    let tripId: String
+    let routeName: String
+    let headsign: String
+    let mode: String
+    let stops: [TripStop]
+    let polyline: [Double]
+    let deviationSeconds: Double
+    let vehicle: VehiclePosition?
+    let liveNote: String
+
+    var coordinates: [CLLocationCoordinate2D] {
+        stride(from: 0, to: polyline.count - 1, by: 2).map {
+            CLLocationCoordinate2D(latitude: polyline[$0], longitude: polyline[$0 + 1])
+        }
+    }
+
+    /// Late (positive) or early (negative), phrased for a person.
+    var punctuality: String? {
+        let minutes = Int((deviationSeconds / 60).rounded())
+        if minutes == 0 { return nil }
+        return minutes > 0
+            ? "\(minutes) min late"
+            : "\(-minutes) min early"
+    }
+}

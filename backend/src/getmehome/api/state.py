@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import (
@@ -23,6 +23,7 @@ from ..config import (
     TRANSIT_FILE,
 )
 from ..graph.model import WalkGraph
+from ..ingest.wmata_live import WmataLive
 from ..places import PlaceIndex
 from ..routing.astar import GraphIndex
 from ..routing.multimodal import TransitIndex
@@ -40,6 +41,9 @@ class AppState:
     transit: TransitIndex | None = None
     crime: CrimeIndex | None = None
     places: PlaceIndex | None = None
+    # Real-time WMATA client. Always present; it reports itself disabled when
+    # no API key is configured, so callers need no separate check.
+    live: WmataLive = field(default_factory=WmataLive)
 
     @property
     def has_transit(self) -> bool:

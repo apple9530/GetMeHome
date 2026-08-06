@@ -197,3 +197,88 @@ class MetaResponse(BaseModel):
     crimeWindows: list[int] = []
     defaultCrimeWindow: int = 0
     bbox: list[float]
+
+
+# --------------------------------------------------------------------------
+# Transit stops, timetables and live vehicles
+# --------------------------------------------------------------------------
+
+
+class TransitStopModel(BaseModel):
+    """One stop marker on the map."""
+
+    id: str
+    name: str
+    lat: float
+    lon: float
+    # "metro" | "bus" | "rail" | ...
+    mode: str
+    routes: list[str] = []
+
+
+class TransitStopsResponse(BaseModel):
+    stops: list[TransitStopModel]
+    total: int
+    # True when the viewport holds more stops than were returned, so the
+    # client can say "zoom in" rather than implying this is all of them.
+    truncated: bool = False
+
+
+class DepartureModel(BaseModel):
+    routeName: str
+    headsign: str
+    mode: str
+    # HH:MM on the service day.
+    scheduledTime: str
+    # Minutes from now, from the schedule.
+    scheduledMinutes: int
+    # Minutes from now per the operator's live prediction, when there is one.
+    liveMinutes: int | None = None
+    patternId: int
+    tripId: str
+    stopsRemaining: int
+    vehicleId: str = ""
+
+
+class StopBoardResponse(BaseModel):
+    stopId: str
+    stopName: str
+    mode: str
+    departures: list[DepartureModel]
+    # Whether any live prediction was available, and why not when it was not.
+    live: bool = False
+    liveNote: str = ""
+
+
+class TripStopModel(BaseModel):
+    stopId: str
+    name: str
+    lat: float
+    lon: float
+    arrivalTime: str
+    # Minutes from now. Negative once the call is in the past.
+    minutes: int
+    passed: bool = False
+
+
+class VehiclePosition(BaseModel):
+    lat: float
+    lon: float
+    # True when interpolated from predictions rather than reported. Trains are
+    # always estimated: WMATA publishes track circuits, not coordinates.
+    estimated: bool = False
+
+
+class TripDetailResponse(BaseModel):
+    patternId: int
+    tripId: str
+    routeName: str
+    headsign: str
+    mode: str
+    stops: list[TripStopModel]
+    # Flat [lat, lon, ...] along the whole trip, for the map.
+    polyline: list[float]
+    # Seconds behind schedule; negative is early.
+    deviationSeconds: float = 0.0
+    vehicle: VehiclePosition | None = None
+    liveNote: str = ""
