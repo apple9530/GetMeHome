@@ -32,4 +32,18 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s \
     CMD python -c "import httpx,sys; sys.exit(0 if httpx.get('http://localhost:8000/health').json()['status']=='ok' else 1)"
 
-CMD ["uvicorn", "getmehome.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# One worker, deliberately.
+#
+# The ETA share store is process-local memory, so a second worker would serve
+# "no such share" for half the requests on a live share. The graph is also
+# loaded per worker, so a second one doubles the memory for no throughput a
+# single async worker cannot already provide at this traffic. Scaling past
+# that means moving shares to Redis first — see the README.
+#
+# --proxy-headers so the app sees the real scheme and host behind a reverse
+# proxy. Set GETMEHOME_PUBLIC_URL as well: it is what share links are built
+# from, and it must be right from outside the network.
+CMD ["uvicorn", "getmehome.api.main:app", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--workers", "1", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]

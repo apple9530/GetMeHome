@@ -92,6 +92,17 @@ GEOCODER_URL = os.environ.get(
 )
 GEOCODER_USER_AGENT = "GetMeHome/1.0 (safety routing for Washington DC)"
 
+# Public origin, e.g. https://getmehome.example.com. Used to build the ETA
+# share link, which is the one URL this service hands to someone else and so
+# the one that has to be right from outside.
+#
+# Behind a reverse proxy the request's own scheme and host are the proxy's
+# internal ones, so a link built from them comes out as http://app:8000/... —
+# unreachable, and downgraded from HTTPS for a URL carrying a live location.
+# Setting this removes the guesswork; leaving it unset falls back to the
+# request, which is correct when the service is exposed directly.
+PUBLIC_BASE_URL = os.environ.get("GETMEHOME_PUBLIC_URL", "").rstrip("/")
+
 
 # --------------------------------------------------------------------------
 # Safety model

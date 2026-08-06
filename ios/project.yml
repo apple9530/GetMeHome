@@ -47,6 +47,17 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen:
           UIColorName: ""
+
+        # The backend this build talks to on first launch. Set it once and
+        # every install connects without anyone typing an address:
+        #
+        #     export GETMEHOME_SERVER_URL=https://getmehome.example.com
+        #     xcodegen generate
+        #
+        # Left empty it falls back to http://localhost:8000, which is right for
+        # the simulator and wrong on a device — where localhost is the phone.
+        # Settings still overrides it per install.
+        GetMeHomeServerURL: ${GETMEHOME_SERVER_URL}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIRequiredDeviceCapabilities:

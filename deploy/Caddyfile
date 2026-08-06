@@ -1,0 +1,53 @@
+# Caddy obtains and renews the certificate itself; there is nothing to run on
+# a cron. The only prerequisite is that DOMAIN resolves to this host and ports
+# 80 and 443 are reachable.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# The route response is the big one — a few hundred kilobytes of polyline
+	# before compression, on a phone that may be on a weak connection.
+	reverse_proxy api:8000 {
+		# The app builds share links from these when GETMEHOME_PUBLIC_URL is
+		# not set, and reads the client IP from them for rate limiting.
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+
+		# The graph loads for a few seconds at boot; without this a deploy
+		# returns 502 to anyone unlucky enough to hit it in that window.
+		lb_try_duration 10s
+		lb_try_interval 500ms
+	}
+
+	# A recipient's browser holding a live location has no business caching it,
+	# and the app's own responses go stale in seconds. The API sets these on
+	# the share page itself; this covers everything else.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Share tokens appear in the path, and a token is a credential: anyone
+	# holding one can watch a live location. Logging them writes that link
+	# into a plaintext file that outlives the share by a very long way, so the
+	# path is redacted before it is written.
+	#
+	# Verify with `docker compose exec caddy caddy validate --config
+	# /etc/caddy/Caddyfile` after any edit — a malformed filter silently logs
+	# the unredacted path.
+	log {
+		output stdout
+		format filter {
+			wrap console
+			fields {
+				request>uri regexp "/(s|share)/[^/?]+" "/${1}/REDACTED"
+			}
+		}
+	}
+}

@@ -23,8 +23,9 @@ struct TransitStopView: View {
     @State private var error: String?
     @State private var isLoading = true
     @State private var selected: Departure?
-    /// Drives the periodic refresh while the sheet is open.
-    @State private var refreshTask: Task<Void, Never>?
+    /// Set when the server says this stop does not exist, which no amount of
+    /// retrying will fix.
+    @State private var isUnrecoverable = false
 
     var body: some View {
         NavigationStack {
@@ -46,8 +47,7 @@ struct TransitStopView: View {
                 }
             }
         }
-        .task { await startRefreshing() }
-        .onDisappear { refreshTask?.cancel() }
+        .task { await pollWhileVisible() }
         .sheet(item: $selected) { departure in
             TransitTripView(departure: departure, fromStopId: stop.id)
         }
@@ -149,6 +149,9 @@ struct TransitStopView: View {
                 .multilineTextAlignment(.center)
             if error != nil {
                 Button("Try again") {
+                    // Clear the flag as well, or a stop that 404'd once can
+                    // never be retried even after the server is rebuilt.
+                    isUnrecoverable = false
                     Task { await load() }
                 }
                 .buttonStyle(.bordered)
@@ -160,17 +163,22 @@ struct TransitStopView: View {
 
     // MARK: - Loading
 
-    /// Reload every 30 seconds while the sheet is open.
+    /// Reload every 30 seconds for as long as the sheet is on screen.
     ///
-    /// Matched to how often WMATA's predictions actually move; polling faster
-    /// spends the API quota to redraw identical numbers.
-    private func startRefreshing() async {
-        refreshTask?.cancel()
-        refreshTask = Task {
-            while !Task.isCancelled {
-                await load()
-                try? await Task.sleep(for: .seconds(30))
-            }
+    /// The loop lives directly inside `.task` rather than in a `Task` this
+    /// view stores. SwiftUI cancels a `.task` when the view goes away or its
+    /// identity changes; a hand-rolled one is only cancelled by `onDisappear`,
+    /// so a redraw that rebuilt the view left the old loop running and started
+    /// another beside it. Two became four, and the server saw a burst of
+    /// identical requests.
+    ///
+    /// Thirty seconds matches how often WMATA's predictions actually move.
+    /// Polling faster spends the API quota redrawing identical numbers.
+    private func pollWhileVisible() async {
+        while !Task.isCancelled {
+            await load()
+            if isUnrecoverable { return }
+            try? await Task.sleep(for: .seconds(30))
         }
     }
 
@@ -183,8 +191,14 @@ struct TransitStopView: View {
             error = nil
         } catch {
             guard !Task.isCancelled else { return }
-            // Keep whatever is already on screen. A stale board beats an error
-            // page when the only thing that failed was a refresh.
+            // A 404 means this stop id is not one the server knows. Retrying
+            // cannot help, and hammering it thirty seconds apart forever is
+            // just noise in someone's log.
+            if case let RoutingError.server(status, _) = error, status == 404 {
+                isUnrecoverable = true
+            }
+            // Otherwise keep whatever is already on screen: a stale board
+            // beats an error page when only the refresh failed.
             if board == nil {
                 self.error = (error as? RoutingError)?.errorDescription
                     ?? error.localizedDescription
@@ -206,7 +220,7 @@ struct TransitTripView: View {
     @State private var detail: TripDetail?
     @State private var error: String?
     @State private var cameraPosition: MapCameraPosition = .automatic
-    @State private var refreshTask: Task<Void, Never>?
+    @State private var isUnrecoverable = false
 
     var body: some View {
         NavigationStack {
@@ -231,8 +245,7 @@ struct TransitTripView: View {
                 }
             }
         }
-        .task { await startRefreshing() }
-        .onDisappear { refreshTask?.cancel() }
+        .task { await pollWhileVisible() }
     }
 
     private func content(_ detail: TripDetail) -> some View {
@@ -373,13 +386,12 @@ struct TransitTripView: View {
         )
     }
 
-    private func startRefreshing() async {
-        refreshTask?.cancel()
-        refreshTask = Task {
-            while !Task.isCancelled {
-                await load()
-                try? await Task.sleep(for: .seconds(20))
-            }
+    /// As above: the loop belongs to `.task` so SwiftUI owns its lifetime.
+    private func pollWhileVisible() async {
+        while !Task.isCancelled {
+            await load()
+            if isUnrecoverable { return }
+            try? await Task.sleep(for: .seconds(20))
         }
     }
 
@@ -396,7 +408,13 @@ struct TransitTripView: View {
             detail = fetched
             error = nil
         } catch {
-            guard !Task.isCancelled, detail == nil else { return }
+            guard !Task.isCancelled else { return }
+            if case let RoutingError.server(status, _) = error, status == 404 {
+                // The trip has finished, or the timetable was rebuilt under
+                // us. Either way it will not come back.
+                isUnrecoverable = true
+            }
+            guard detail == nil else { return }
             self.error = (error as? RoutingError)?.errorDescription
                 ?? error.localizedDescription
         }

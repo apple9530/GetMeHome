@@ -366,3 +366,80 @@ def _pattern_of(network, trip_id: str) -> int:
         if trip_id in pattern.trip_ids:
             return pattern.pattern_id
     raise AssertionError(f"no pattern carries {trip_id}")
+
+
+# ---------------------------------------------------------------------------
+# Ids with punctuation, over HTTP
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def api(station_network):
+    """The API with a transit timetable loaded, for the id-handling tests."""
+    from fastapi.testclient import TestClient
+
+    from getmehome.api.main import app
+    from getmehome.api.state import AppState, set_state
+    from getmehome.routing.astar import GraphIndex
+    from getmehome.routing.multimodal import TransitIndex
+    from getmehome.safety.scoring import apply_scores
+
+    from .fixtures import build_grid_graph
+
+    graph = build_grid_graph(7, 7)
+    apply_scores(graph, lights=[], incidents=[], cameras=[])
+    index = GraphIndex(graph)
+
+    def build():
+        return AppState(
+            graph=graph,
+            index=index,
+            cameras=[],
+            transit=TransitIndex(station_network, index),
+        )
+
+    set_state(build())
+    with TestClient(app) as client:
+        set_state(build())
+        yield client
+
+
+def test_a_station_id_with_underscores_survives_the_round_trip(api):
+    """WMATA station ids look like STN_B01_F01, and that broke the client.
+
+    The client escaped the id and then handed it to a URL builder that escaped
+    it again, so `_` went out as `%255F` and the server — which decodes once —
+    looked up a stop named `STN%5FB01%5FF01` and found nothing. The server side
+    was always correct; this pins the contract it offers so a future client
+    change has something to fail against.
+    """
+    stops = api.get(
+        "/transit/stops",
+        params={"minLat": 38.88, "minLon": -77.05, "maxLat": 38.95, "maxLon": -77.00},
+    ).json()["stops"]
+
+    stations = [s for s in stops if "_" in s["id"]]
+    assert stations, "fixture should produce ids with underscores"
+
+    for station in stations:
+        response = api.get(f"/transit/stop/{station['id']}/board")
+        assert response.status_code == 200, station["id"]
+        assert response.json()["stopId"] == station["id"]
+
+
+def test_a_singly_escaped_id_is_accepted(api):
+    """Escaping the underscore is legal, and the server must still resolve it."""
+    assert api.get("/transit/stop/STN%5F2/board").status_code == 200
+
+
+# The double-escaped case — `STN%255F2`, the bug's actual signature — is
+# deliberately not tested here. Starlette's TestClient decodes the path twice
+# (it builds the ASGI scope without `raw_path`, so the router unquotes an
+# already-unquoted path), while uvicorn decodes once. The same request
+# therefore resolves under the test client and 404s in production, so asserting
+# either outcome would be testing the harness rather than the code. The fix
+# belongs on the client, which now escapes exactly once.
+
+
+def test_an_unknown_stop_is_a_404_not_a_crash(api):
+    assert api.get("/transit/stop/no-such-stop/board").status_code == 404

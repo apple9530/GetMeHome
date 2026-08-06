@@ -11,7 +11,13 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-from ..config import DC_BBOX, DC_TIMEZONE, GEOCODER_URL, GEOCODER_USER_AGENT
+from ..config import (
+    DC_BBOX,
+    DC_TIMEZONE,
+    GEOCODER_URL,
+    GEOCODER_USER_AGENT,
+    PUBLIC_BASE_URL,
+)
 from ..daylight import is_night as compute_is_night
 from ..geo import simplify_polyline
 from ..ingest.wmata_live import station_code
@@ -930,8 +936,19 @@ def _same_line(prediction, detail) -> bool:
 
 
 def _share_url(request: Request, token: str) -> str:
-    """The link to hand to a friend, on whatever host served this request."""
-    base = str(request.base_url).rstrip("/")
+    """The link to hand to a friend.
+
+    Prefers the configured public origin. Falling back to the request's own
+    host is right when the service is exposed directly and wrong the moment it
+    is behind a proxy: the scheme and host are then the proxy's internal ones,
+    so the link comes out as ``http://app:8000/s/...`` — unreachable, and
+    downgraded from HTTPS for a URL that carries a live location.
+
+    Running uvicorn with ``--proxy-headers`` fixes the fallback for a
+    well-configured proxy, but ``GETMEHOME_PUBLIC_URL`` removes the guesswork
+    entirely and is what the deployment docs use.
+    """
+    base = PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
     return f"{base}/s/{token}"
 
 

@@ -1,4 +1,5 @@
-.PHONY: help install test lint graph graph-refresh gtfs serve docker clean
+.PHONY: help install test lint graph graph-refresh gtfs serve docker clean \
+        data-manifest deploy-data deploy-fly
 
 PY ?= python3
 export PYTHONPATH := src
@@ -14,6 +15,10 @@ help:
 	@echo "  make graph-refresh rebuild, re-downloading streetlights and crime"
 	@echo "  make serve         run the API on :8000"
 	@echo "  make docker        build the container image"
+	@echo ""
+	@echo "  make data-manifest what the server needs, and how big it is"
+	@echo "  make deploy-data   rsync the built graph to a host (HOST=user@server)"
+	@echo "  make deploy-fly    upload the built graph to a Fly volume"
 
 install:
 	$(PY) -m pip install -e ".[dev]"
@@ -49,6 +54,43 @@ serve:
 
 docker:
 	docker build -t getmehome-backend .
+
+# The built graph is not in the image and not in git: it is large, it is
+# regenerated on a different cadence than the code, and it is reproducible
+# from the ingest step. So it has to be copied to the server separately.
+
+data-manifest:
+	@echo "Files the server loads at startup:"
+	@ls -lh data/build 2>/dev/null || \
+		{ echo "  (nothing built yet — run 'make graph')"; exit 1; }
+	@echo ""
+	@echo "Total:"
+	@du -sh data/build
+	@echo ""
+	@echo "Roughly this much RAM is needed on top of the Python runtime;"
+	@echo "the arrays are decompressed on load, so allow noticeably more"
+	@echo "than the on-disk figure and confirm with 'docker stats'."
+
+# Copy the build output to a host running deploy/docker-compose.yml.
+#   make deploy-data HOST=root@getmehome.example.com
+# --delete so a renamed or removed artefact does not linger and get loaded.
+deploy-data:
+	@if [ -z "$$HOST" ]; then echo "Set HOST=user@server"; exit 1; fi
+	@if [ ! -d data/build ]; then echo "Nothing built — run 'make graph'"; exit 1; fi
+	rsync -avz --delete data/build/ "$$HOST:~/getmehome/deploy/data/"
+	@echo ""
+	@echo "Now restart the API so it loads the new graph:"
+	@echo "    ssh $$HOST 'cd getmehome/deploy && docker compose restart api'"
+
+# Same, onto a Fly volume.
+deploy-fly:
+	@if [ ! -d data/build ]; then echo "Nothing built — run 'make graph'"; exit 1; fi
+	fly ssh console -C "mkdir -p /data/build"
+	@for f in data/build/*; do \
+		echo "uploading $$f"; \
+		fly sftp shell <<< "put $$f /data/build/$$(basename $$f)"; \
+	done
+	fly apps restart
 
 clean:
 	rm -rf data/build

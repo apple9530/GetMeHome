@@ -1,0 +1,63 @@
+# Fly.io deployment — the least-effort managed option.
+#
+# It gives you HTTPS, a persistent volume for the graph, and a global anycast
+# address without running a host. Trade-off: a volume is tied to one region and
+# one machine, so this is a single-instance deployment. That suits the app —
+# the ETA share store is process-local memory, so more than one instance would
+# break live shares until shares move to Redis.
+#
+#   fly launch --no-deploy --copy-config
+#   fly volumes create getmehome_data --size 5 --region iad
+#   fly secrets set WMATA_API_KEY=... GETMEHOME_PUBLIC_URL=https://<app>.fly.dev
+#   fly deploy
+#
+# Then push the built graph onto the volume — the image does not carry it:
+#   fly ssh console -C "mkdir -p /data/build"
+#   fly sftp shell            # then: put backend/data/build/* /data/build/
+#
+# Or, from the backend directory:  make deploy-fly
+
+app = "getmehome"
+primary_region = "iad"   # Ashburn — next door to DC, which is the whole map
+
+[build]
+  dockerfile = "../backend/Dockerfile"
+
+[env]
+  GETMEHOME_DATA_DIR = "/data"
+
+[mounts]
+  source = "getmehome_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Never scale to zero. A cold start reloads the whole graph from disk, and
+  # someone opening this app is usually standing in the street at night —
+  # about the worst moment to make them wait for a container to boot.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # One instance, deliberately: see the note at the top.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 80
+
+[[http_service.checks]]
+  grace_period = "90s"   # the graph takes a few seconds to load
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"
+
+[[vm]]
+  # Start here and adjust from `fly status` once the real graph is loaded.
+  # Everything — graph, crime points, timetable — is held in memory, and a
+  # machine that is too small is OOM-killed during startup rather than failing
+  # in a way that names the cause.
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 1

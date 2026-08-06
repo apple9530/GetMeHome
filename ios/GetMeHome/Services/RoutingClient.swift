@@ -128,7 +128,7 @@ actor RoutingClient {
         remainingMetres: Double?
     ) async throws -> ShareStatus {
         try await post(
-            "/share/\(token)/update",
+            "/share/\(encoded(token))/update",
             body: ShareUpdateRequest(
                 ownerKey: ownerKey,
                 lat: coordinate.latitude,
@@ -144,7 +144,7 @@ actor RoutingClient {
         token: String, ownerKey: String, arrived: Bool
     ) async throws -> ShareStatus {
         try await post(
-            "/share/\(token)/end",
+            "/share/\(encoded(token))/end",
             body: ShareFinishRequest(ownerKey: ownerKey, arrived: arrived)
         )
     }
@@ -182,11 +182,25 @@ actor RoutingClient {
         )
     }
 
-    /// GTFS ids are opaque and WMATA's contain slashes and colons, which would
-    /// otherwise be read as extra path components.
+    /// Escape an opaque id for use as a single path component.
+    ///
+    /// GTFS ids are arbitrary strings — WMATA's rail stations look like
+    /// `STN_B01_F01` and bus trip ids carry colons and slashes — so anything
+    /// outside the URL unreserved set has to be escaped or it becomes extra
+    /// path segments. Unreserved characters are left alone deliberately:
+    /// escaping the underscore in `STN_B01_F01` is legal but makes the logs
+    /// unreadable, which is how the double-encoding bug hid for as long as it
+    /// did.
     private func encoded(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? value
+        value.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? value
     }
+
+    /// RFC 3986 unreserved: A-Z a-z 0-9 - . _ ~
+    private static let unreserved: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "-._~")
+        return set
+    }()
 
     // MARK: - Places
 
@@ -225,18 +239,32 @@ actor RoutingClient {
 
     // MARK: - Transport
 
-    private func get<T: Decodable>(_ path: String, query: [URLQueryItem]) async throws -> T {
-        guard var components = URLComponents(
-            url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false
-        ) else { throw RoutingError.badURL }
+    /// Build a URL from an *already-escaped* path.
+    ///
+    /// This used to go through `URL.appendingPathComponent`, which escapes
+    /// again — so an id containing an underscore went out as `%255F`: the
+    /// underscore escaped to `%5F`, then the percent escaped to `%25`. The
+    /// server decodes once, sees `%5F`, and finds no such stop. Parsing an
+    /// escaped string with `URLComponents(string:)` preserves the escaping
+    /// exactly as written instead of applying a second round of it.
+    private func makeURL(_ path: String, query: [URLQueryItem]) throws -> URL {
+        var base = baseURL.absoluteString
+        while base.hasSuffix("/") { base.removeLast() }
+
+        guard var components = URLComponents(string: base + path) else {
+            throw RoutingError.badURL
+        }
         components.queryItems = query.isEmpty ? nil : query
         guard let url = components.url else { throw RoutingError.badURL }
+        return url
+    }
 
-        return try await perform(URLRequest(url: url))
+    private func get<T: Decodable>(_ path: String, query: [URLQueryItem]) async throws -> T {
+        try await perform(URLRequest(url: try makeURL(path, query: query)))
     }
 
     private func post<Body: Encodable, T: Decodable>(_ path: String, body: Body) async throws -> T {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        var request = URLRequest(url: try makeURL(path, query: []))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)

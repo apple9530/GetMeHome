@@ -327,6 +327,105 @@ provisioning profile expires every 7 days and you will need to re-install.
 
 ---
 
+## Running it somewhere permanent
+
+`make serve` is a development server on your laptop. To have installed apps
+connect to a backend that is simply always there, two things have to happen:
+the server needs a stable HTTPS address, and the app needs to be built knowing
+that address.
+
+### The app finds the server by itself
+
+The server URL is baked into the build from an environment variable:
+
+```bash
+export GETMEHOME_SERVER_URL=https://getmehome.example.com
+cd ios && xcodegen generate
+```
+
+That writes `GetMeHomeServerURL` into `Info.plist`, and every install connects
+on first launch with nobody typing anything. The field in Settings stays as a
+per-install override, which is what you want for development and for anyone
+running their own backend. Leave the variable unset and it falls back to
+`http://localhost:8000` — right for the simulator, wrong on a device, where
+localhost *is* the phone.
+
+**HTTPS is not optional here.** The client currently ships
+`NSAllowsArbitraryLoads` so it can reach a laptop over plain HTTP while you are
+developing. That has to come out of `project.yml` before you release, and once
+it does an `http://` backend stops working at all.
+
+### A VPS with Docker
+
+`deploy/` has a two-container compose file: the API, and Caddy in front of it
+obtaining and renewing a Let's Encrypt certificate on its own.
+
+```bash
+# On the server
+git clone <this repo> getmehome && cd getmehome/deploy
+cp .env.example .env && $EDITOR .env          # domain, email, WMATA key
+docker compose up -d
+
+# From your machine, once `make graph` has run locally
+cd backend && make deploy-data HOST=root@your-server
+ssh root@your-server 'cd getmehome/deploy && docker compose restart api'
+```
+
+The API is never published to the host — only Caddy can reach it — so there is
+no way to hit it over plain HTTP even by accident.
+
+### Fly.io
+
+`deploy/fly.toml` is the managed equivalent: HTTPS, a persistent volume and an
+anycast address without running a host.
+
+```bash
+fly launch --no-deploy --copy-config
+fly volumes create getmehome_data --size 5 --region iad
+fly secrets set WMATA_API_KEY=... GETMEHOME_PUBLIC_URL=https://<app>.fly.dev
+fly deploy
+cd backend && make deploy-fly
+```
+
+`iad` is Ashburn, next door to DC — which is the entire map, so there is no
+reason to serve it from anywhere else.
+
+### Things that will bite you
+
+**The graph is not in the image.** It is large, reproducible from the ingest
+step, and rebuilt on a different cadence than the code, so it is copied to the
+server separately — that is what `make deploy-data` is for. `make data-manifest`
+lists what the server needs and how big it is. Restart the API after copying;
+everything is loaded once at startup and held in memory.
+
+**Memory is the sizing constraint, not CPU.** The graph, the crime points and
+the timetable are all resident. The arrays are decompressed on load, so allow
+noticeably more than the on-disk size, and confirm against your own build with
+`docker stats` or `fly status`. Too small a machine is OOM-killed during startup
+rather than failing in a way that names the cause.
+
+**One worker, deliberately.** ETA shares live in process memory, so a second
+worker would answer "no such share" for half the requests on a live share, and
+would double the memory for throughput a single async worker already provides
+at this traffic. Scaling past one instance means moving shares to Redis first.
+
+**Set `GETMEHOME_PUBLIC_URL`.** Share links are built from it. Behind a proxy
+the request's own scheme and host are the proxy's internal ones, so without it
+a link comes out as `http://api:8000/s/...` — unreachable, and downgraded from
+HTTPS for a URL carrying a live location.
+
+**Swap the geocoder before real traffic.** The default is the public Nominatim
+instance, which rate-limits hard and asks you not to lean on it. Point
+`GETMEHOME_GEOCODER_URL` at your own or a paid one. Most queries are answered
+by the local index anyway; this only affects the top-up.
+
+**Rebuild the data periodically.** Crime moves, and the GTFS timetable is
+loaded for a single service date at build time, so departure boards drift as
+schedules change. A weekly `make graph-refresh && make deploy-data` is a
+reasonable cadence; nothing does it for you.
+
+---
+
 ## API
 
 | Endpoint | Purpose |

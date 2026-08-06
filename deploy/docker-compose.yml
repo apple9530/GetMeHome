@@ -1,0 +1,84 @@
+# GetMeHome on a single VPS, with automatic HTTPS.
+#
+# Two containers: the API, and Caddy in front of it for TLS. Caddy is here
+# rather than nginx because it obtains and renews a Let's Encrypt certificate
+# on its own — and HTTPS is not optional for this app. The iOS client currently
+# ships with `NSAllowsArbitraryLoads` so it can talk to a laptop over plain
+# HTTP in development; that has to come out before release, and the moment it
+# does, an http:// backend stops working entirely.
+#
+#   1. Point an A record at this host.
+#   2. Put the domain and your email in .env (see .env.example).
+#   3. Copy the built graph onto the host — `make deploy-data` from backend/.
+#   4. docker compose up -d
+#
+# Check it with:  curl https://your-domain/health
+
+services:
+  api:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    environment:
+      # What share links are built from. Must be the public origin, not the
+      # container's own address — this is the one URL the service hands to
+      # somebody else.
+      GETMEHOME_PUBLIC_URL: "https://${DOMAIN}"
+      # Live buses and arrival predictions. Without it the app still shows
+      # timetables and says that is what it is showing.
+      WMATA_API_KEY: "${WMATA_API_KEY:-}"
+      GETMEHOME_DATA_DIR: /data
+      # Self-host Nominatim or use a paid geocoder if you expect real traffic;
+      # the public instance rate-limits hard and asks you not to lean on it.
+      GETMEHOME_GEOCODER_URL: "${GEOCODER_URL:-https://nominatim.openstreetmap.org}"
+    volumes:
+      # Read-only: nothing the API does should ever write to the build output,
+      # and mounting it that way means a bug cannot corrupt the graph.
+      - ./data:/data:ro
+    # Not published to the host. Only Caddy reaches it, so there is no way to
+    # hit the API over plain HTTP from outside even by accident.
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import httpx, sys
+          sys.exit(0 if httpx.get("http://localhost:8000/health").json()["status"] == "ok" else 1)
+      interval: 30s
+      timeout: 5s
+      # The graph takes a few seconds to load from disk at startup, and the
+      # container is not ready until it has.
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          # Raise this if the container is killed at startup. The graph, the
+          # crime points and the timetable are all held in memory; measure your
+          # own build with `docker stats` once it is up rather than trusting a
+          # guess here.
+          memory: 3G
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: "${DOMAIN}"
+      ACME_EMAIL: "${ACME_EMAIL}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here. Losing this volume means re-issuing on every
+      # restart, which Let's Encrypt rate-limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  caddy_data:
+  caddy_config:

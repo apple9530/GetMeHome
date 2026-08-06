@@ -72,10 +72,29 @@ enum CrimeWindow: Int, CaseIterable, Identifiable {
 @Observable
 @MainActor
 final class AppSettings {
-    /// Default points at the simulator's host. On a physical device this has
-    /// to be the Mac's LAN address or a deployed URL — localhost on an iPhone
-    /// means the iPhone.
-    static let defaultServer = "http://localhost:8000"
+    /// Where the app talks to when the user has not overridden it.
+    ///
+    /// Baked in at build time from `GETMEHOME_SERVER_URL`, which `project.yml`
+    /// writes into Info.plist. That is what makes a shipped build connect to
+    /// the deployed backend on first launch with nobody typing anything — the
+    /// Settings field stays as an override for development and for anyone
+    /// running their own server.
+    ///
+    /// Falls back to the simulator's host. On a physical device localhost is
+    /// the phone itself, so a device build with no configured URL will fail to
+    /// connect, which is the correct and visible outcome rather than a silent
+    /// one.
+    static let defaultServer: String = {
+        let configured = Bundle.main.object(forInfoDictionaryKey: "GetMeHomeServerURL")
+        if let value = configured as? String,
+           !value.isEmpty,
+           // Guard against the placeholder surviving into a build.
+           !value.contains("$("),
+           URL(string: value) != nil {
+            return value
+        }
+        return "http://localhost:8000"
+    }()
 
     var serverURLString: String {
         didSet { defaults.set(serverURLString, forKey: Keys.server) }
