@@ -219,6 +219,10 @@ final class NavigationViewModel {
         // The task body inherits this class's main-actor isolation, so state
         // mutations here need no further hopping; only the network call
         // suspends onto the client actor.
+        // Read before the task so the nested predicate below closes over a
+        // plain string rather than over `self`.
+        let preferredLabel = itinerary.label
+
         rerouteTask = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -239,7 +243,7 @@ final class NavigationViewModel {
                 // Prefer the same kind of route the user originally chose —
                 // someone who picked the safest option did not ask to be put
                 // on the fastest one just because they took a wrong turn.
-                let replacement = response.itineraries.first { $0.label == itinerary.label }
+                let replacement = response.itineraries.first { $0.label == preferredLabel }
                     ?? response.itineraries.first
 
                 if let replacement {

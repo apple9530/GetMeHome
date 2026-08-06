@@ -286,7 +286,10 @@ struct SearchView: View {
                 } label: {
                     Image(systemName: isStarred ? "star.fill" : "star")
                         .font(.subheadline)
-                        .foregroundStyle(isStarred ? Color.yellow : .tertiary)
+                        // Both branches must be the same type, and there is no
+                        // `Color.tertiary` — `.tertiary` is a hierarchical
+                        // style, usable only where the type is not pinned.
+                        .foregroundStyle(isStarred ? Color.yellow : Color.secondary.opacity(0.45))
                         .frame(width: 36, height: 36)
                         .contentShape(Rectangle())
                 }
