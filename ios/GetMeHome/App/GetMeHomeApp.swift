@@ -86,11 +86,11 @@ struct RootView: View {
             withAnimation { fit(to: first) }
         }
         // Settings that change what is drawn or what was asked for are
-        // reacted to here, once, rather than in each control. The same
-        // preference is deliberately offered in more than one place — the
-        // crime window belongs both beside the routes and beside the map
-        // layer it governs — and a handler per control means two refetches
-        // for one change.
+        // reacted to here rather than in each control. A preference can
+        // surface in more than one place, and a handler per control would
+        // mean two refetches for one change; keeping them here also means a
+        // control inside a sheet still triggers a refresh after the sheet has
+        // gone.
         .onChange(of: settings.crimeWindow) { _, _ in
             Task { await planner.changeCrimeWindow() }
         }

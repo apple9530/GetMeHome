@@ -179,38 +179,10 @@ struct RouteOptionsView: View {
             }
 
             timeOfDayControl
-            crimeWindowControl
         }
         .padding(.horizontal)
         .padding(.top, 14)
         .padding(.bottom, 10)
-    }
-
-    /// How far back the crime data reaches.
-    ///
-    /// Next to the day/night control because it is the same kind of choice —
-    /// both change what the score in front of you is measuring, and neither is
-    /// discoverable if it lives in Settings.
-    private var crimeWindowControl: some View {
-        @Bindable var settings = settings
-
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Text("Crime data")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Picker("Crime data from the last", selection: $settings.crimeWindow) {
-                    ForEach(CrimeWindow.allCases) { window in
-                        Text(window.shortLabel).tag(window)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Text(settings.crimeWindow.caption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
     }
 
     /// Day / night scoring, with Auto following the sun.

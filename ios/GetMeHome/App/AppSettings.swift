@@ -66,24 +66,6 @@ enum CrimeWindow: Int, CaseIterable, Identifiable {
         case .year: "1 year"
         }
     }
-
-    var shortLabel: String {
-        switch self {
-        case .month: "30d"
-        case .twoMonths: "2mo"
-        case .sixMonths: "6mo"
-        case .year: "1yr"
-        }
-    }
-
-    var caption: String {
-        switch self {
-        case .month: "Only the last 30 days of reports — recent, but noisy."
-        case .twoMonths: "The last two months of reports."
-        case .sixMonths: "The last six months of reports."
-        case .year: "A full year of reports — the steadiest picture."
-        }
-    }
 }
 
 /// User preferences, persisted in `UserDefaults`.
