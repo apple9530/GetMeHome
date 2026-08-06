@@ -76,11 +76,16 @@ final class PlannerViewModel {
     private var overlayTask: Task<Void, Never>?
     private var lastOverlayBounds: MapBounds?
 
+    /// `places` has no default value on purpose: a default argument is
+    /// evaluated in a nonisolated context, so constructing a `@MainActor`
+    /// type there does not compile. The store is owned by the app and passed
+    /// in, which is the right ownership anyway — the view model should not
+    /// quietly create a second copy of the user's saved places.
     init(
         client: RoutingClient,
         location: LocationService,
         settings: AppSettings,
-        places: PlaceStore = PlaceStore()
+        places: PlaceStore
     ) {
         self.client = client
         self.location = location

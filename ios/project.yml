@@ -15,7 +15,14 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    DEVELOPMENT_TEAM: ""          # set your team here, or in Xcode's Signing tab
+    # Read from the environment so it survives regeneration. Set it once:
+    #     echo 'export DEVELOPMENT_TEAM=ABCDE12345' >> ~/.zshrc
+    # Find the ID in Xcode > Settings > Accounts, or at
+    # developer.apple.com/account under Membership.
+    #
+    # Choosing the team in Xcode's Signing tab also works, but the choice
+    # lives in the .xcodeproj, which `xcodegen generate` overwrites.
+    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"

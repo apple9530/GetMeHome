@@ -248,11 +248,21 @@ make test
 
 ```bash
 brew install xcodegen
+
+# Xcode needs a signing team. Find yours in Xcode > Settings > Accounts, or
+# at developer.apple.com/account under Membership.
+export DEVELOPMENT_TEAM=ABCDE12345
+
 cd ios && xcodegen generate && open GetMeHome.xcodeproj
 ```
 
-Set your development team in the target's Signing & Capabilities tab, then
-build to a simulator or device.
+Setting `DEVELOPMENT_TEAM` in your shell rather than picking the team in
+Xcode's Signing tab means the choice survives regeneration — `xcodegen
+generate` overwrites the `.xcodeproj`, taking any manual signing setup with
+it. Put the export in `~/.zshrc` so it persists.
+
+Selecting the team in Xcode works too; you will just have to redo it after
+every regeneration.
 
 On the **simulator**, the default server URL (`http://localhost:8000`) works as
 is. On a **physical device**, localhost is the phone — open Settings inside the
