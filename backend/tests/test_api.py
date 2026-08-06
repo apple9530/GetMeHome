@@ -298,3 +298,65 @@ def test_crime_grid_accepts_a_window(client):
     # The fixture spreads incidents back over most of a year, so a 30-day view
     # must be a strict subset.
     assert narrow["totalIncidents"] < everything["totalIncidents"]
+
+
+# ---------------------------------------------------------------------------
+# Address geocoding
+# ---------------------------------------------------------------------------
+
+
+def test_external_results_are_merged_into_the_ranking_not_appended(monkeypatch):
+    """The bug behind "801 3rd St NW": the right answer arrived fifth.
+
+    The local index returns several plausible near-misses, so appending
+    Nominatim's results left the exact address below all of them. It has to be
+    ranked against them, not after them.
+    """
+    from getmehome.api import main
+    from getmehome.api.schemas import GeocodeResult
+    from getmehome.places import Place, PlaceIndex
+
+    local = PlaceIndex(
+        places=[
+            Place("3rd Street Northwest", 38.9000, -77.0160, "street", ""),
+            Place("799 3rd Street Northwest", 38.8991, -77.0158, "address", ""),
+            Place("803 3rd Street Northwest", 38.8994, -77.0158, "address", ""),
+            Place("1401 3rd Street Northwest", 38.9090, -77.0158, "address", ""),
+        ]
+    ).build()
+
+    state = main.get_state()
+    monkeypatch.setattr(state, "places", local, raising=False)
+    monkeypatch.setattr(
+        main,
+        "_nominatim",
+        lambda q, limit: [
+            GeocodeResult(
+                name="801 3rd Street Northwest",
+                address="801 3rd Street Northwest, Washington, DC",
+                lat=38.8993,
+                lon=-77.0158,
+            )
+        ],
+    )
+
+    body = main.geocode(q="801 3rd St NW", limit=12, lat=None, lon=None)
+    assert body.results[0].name == "801 3rd Street Northwest"
+
+
+def test_a_nominatim_house_number_row_gets_a_readable_name():
+    """Nominatim's own `name` for a doorway is the bare number or nothing."""
+    from getmehome.api.main import _nominatim_name
+
+    row = {
+        "name": "",
+        "address": {"house_number": "801", "road": "3rd Street Northwest"},
+    }
+    assert _nominatim_name(row, "801, 3rd Street Northwest, Washington") == (
+        "801 3rd Street Northwest"
+    )
+
+    # No house number: fall back to whatever the row does carry.
+    assert _nominatim_name({"name": "Madam's Organ"}, "Madam's Organ, 18th St") == (
+        "Madam's Organ"
+    )

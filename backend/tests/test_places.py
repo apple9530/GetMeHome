@@ -260,3 +260,185 @@ def test_addresses_and_names_are_both_indexed(tmp_path):
 
     # A housenumber with no street is not an address.
     assert place_entries({"addr:housenumber": "801"}) == []
+
+
+# ---------------------------------------------------------------------------
+# Address parsing
+# ---------------------------------------------------------------------------
+
+
+def test_address_components_are_separated():
+    from getmehome.places import parse_address
+
+    a = parse_address("801 3rd St NW")
+    assert a.house_number == 801
+    assert a.street == ("3",)
+    assert a.street_type == "street"
+    assert a.quadrant == "northwest"
+    assert a.is_address
+
+    b = parse_address("1600 Pennsylvania Avenue NW")
+    assert b.house_number == 1600
+    assert b.street == ("pennsylvania",)
+    assert b.street_type == "avenue"
+
+
+def test_a_street_without_a_number_is_not_an_address():
+    from getmehome.places import parse_address
+
+    a = parse_address("3rd St NW")
+    assert a.house_number is None
+    assert not a.is_address
+    assert a.street == ("3",)
+    assert a.quadrant == "northwest"
+
+
+def test_dropping_the_street_type_still_parses_the_same_street():
+    """People type "801 3rd NW" constantly."""
+    from getmehome.places import parse_address
+
+    with_type = parse_address("801 3rd St NW")
+    without = parse_address("801 3rd NW")
+    assert without.street == with_type.street
+    assert without.quadrant == with_type.quadrant
+
+
+def test_unit_numbers_do_not_become_part_of_the_street():
+    from getmehome.places import parse_address
+
+    a = parse_address("801 3rd St NW Apt 5")
+    assert a.street == ("3",)
+    assert a.house_number == 801
+
+
+def test_a_quadrant_mismatch_is_all_but_disqualifying():
+    """3rd St NW and 3rd St SE are different streets, kilometres apart."""
+    from getmehome.places import parse_address, street_match
+
+    nw = parse_address("801 3rd St NW")
+    same = parse_address("801 3rd Street Northwest")
+    other = parse_address("801 3rd Street Southeast")
+
+    assert street_match(nw, same) == pytest.approx(1.0)
+    assert street_match(nw, other) < 0.15
+
+
+def test_a_different_street_does_not_match_at_all():
+    from getmehome.places import parse_address, street_match
+
+    query = parse_address("801 3rd St NW")
+    assert street_match(query, parse_address("801 Pennsylvania Avenue NW")) == 0.0
+
+
+def test_a_partial_street_name_still_matches():
+    from getmehome.places import parse_address, street_match
+
+    query = parse_address("1600 Penn Ave NW")
+    assert street_match(query, parse_address("1600 Pennsylvania Avenue NW")) > 0.8
+
+
+# ---------------------------------------------------------------------------
+# Address search, against a realistically noisy index
+# ---------------------------------------------------------------------------
+
+# The small fixture at the top of this file cannot reproduce the complaint:
+# with three candidates almost any ranking looks right. This set has the
+# things that actually knocked the answer off the top — the same house number
+# on other streets, the same street in another quadrant, and named places
+# whose names begin with the same digits.
+NOISY_PLACES = [
+    Place("801 3rd Street Northwest", 38.8993, -77.0158, "address", "Washington, DC"),
+    Place("803 3rd Street Northwest", 38.8994, -77.0158, "address", "Washington, DC"),
+    Place("799 3rd Street Northwest", 38.8991, -77.0158, "address", "Washington, DC"),
+    Place("1401 3rd Street Northwest", 38.9090, -77.0158, "address", "Washington, DC"),
+    Place("3rd Street Northwest", 38.9000, -77.0160, "street", "Washington, DC"),
+    Place("3rd Street Southeast", 38.8830, -76.9960, "street", "Washington, DC"),
+    Place("801 3rd Street Southeast", 38.8831, -76.9960, "address", "Washington, DC"),
+    Place("801 Pennsylvania Avenue Northwest", 38.8950, -77.0230, "address", ""),
+    Place("801 K Street Northwest", 38.9020, -77.0230, "address", "Washington, DC"),
+    Place("801 Restaurant", 38.9100, -77.0400, "food", "801 17th Street NW"),
+    Place("8010 Wisconsin Avenue", 38.9900, -77.0970, "address", "Bethesda, MD"),
+    Place("Third Street Tunnel", 38.8960, -77.0160, "other", "Washington, DC"),
+]
+
+
+@pytest.fixture(scope="module")
+def noisy() -> PlaceIndex:
+    return PlaceIndex(places=list(NOISY_PLACES)).build()
+
+
+def test_the_exact_address_wins_outright(noisy):
+    """The case that prompted the rewrite."""
+    results = names(noisy.search("801 3rd St NW"))
+    assert results[0] == "801 3rd Street Northwest"
+
+
+def test_every_spelling_of_the_same_address_agrees(noisy):
+    for query in (
+        "801 3rd St NW",
+        "801 3rd Street NW",
+        "801 3rd street northwest",
+        "801 3RD ST NW",
+        "801 3rd NW",
+    ):
+        assert names(noisy.search(query))[0] == "801 3rd Street Northwest", query
+
+
+def test_neighbouring_house_numbers_come_next(noisy):
+    """Address data is never complete, so near neighbours are useful."""
+    results = names(noisy.search("801 3rd St NW"))
+    assert set(results[1:3]) == {"803 3rd Street Northwest", "799 3rd Street Northwest"}
+
+
+def test_the_street_is_offered_but_below_the_doorways(noisy):
+    results = names(noisy.search("801 3rd St NW"))
+    assert "3rd Street Northwest" in results
+    assert results.index("3rd Street Northwest") > results.index(
+        "801 3rd Street Northwest"
+    )
+
+
+def test_the_wrong_quadrant_does_not_outrank_the_right_one(noisy):
+    results = names(noisy.search("801 3rd St NW"))
+    assert "801 3rd Street Southeast" not in results[:3]
+
+
+def test_the_same_number_on_another_street_is_excluded(noisy):
+    results = names(noisy.search("801 3rd St NW"))
+    for wrong in (
+        "801 Pennsylvania Avenue Northwest",
+        "801 K Street Northwest",
+        "8010 Wisconsin Avenue",
+    ):
+        assert wrong not in results, wrong
+
+
+def test_a_name_that_starts_with_the_same_digits_is_not_an_address(noisy):
+    assert "801 Restaurant" not in names(noisy.search("801 3rd St NW"))
+    # But it is still findable by name.
+    assert "801 Restaurant" in names(noisy.search("801 Restaurant"))
+
+
+def test_a_far_house_number_on_the_right_street_ranks_low(noisy):
+    results = names(noisy.search("801 3rd St NW"))
+    if "1401 3rd Street Northwest" in results:
+        assert results.index("1401 3rd Street Northwest") > results.index(
+            "3rd Street Northwest"
+        )
+
+
+def test_a_bare_street_still_leads_with_the_street(noisy):
+    results = names(noisy.search("3rd St NW"))
+    assert results[0] == "3rd Street Northwest"
+
+
+def test_a_bare_street_respects_the_quadrant(noisy):
+    assert names(noisy.search("3rd St NW"))[0] == "3rd Street Northwest"
+    assert names(noisy.search("3rd St SE"))[0] == "3rd Street Southeast"
+
+
+def test_another_address_on_another_street_still_works(noisy):
+    assert names(noisy.search("801 Penn Ave NW"))[0] == (
+        "801 Pennsylvania Avenue Northwest"
+    )
+    assert names(noisy.search("801 K St NW"))[0] == "801 K Street Northwest"

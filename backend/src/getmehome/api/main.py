@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..config import DC_BBOX, GEOCODER_URL, GEOCODER_USER_AGENT
 from ..daylight import is_night as compute_is_night
 from ..geo import simplify_polyline
-from ..places import leading_house_number, normalise
+from ..places import parse_address, street_match
 from ..routing.multimodal import Itinerary, plan
 from ..safety.cameras import cameras_in_bbox
 from ..safety.hexgrid import hex_vertices
@@ -407,7 +407,10 @@ def geocode(
 
     Nominatim is consulted only to top up a thin result set, which is mostly
     house-number addresses that OSM carries as interpolation rather than as
-    named objects.
+    named objects. Its results are merged into the ranking rather than
+    appended to it: appending was the bug behind "801 3rd St NW" returning
+    everything except the building, because the local index would return four
+    plausible-looking near-misses and push the real answer to fifth.
     """
     state = None
     try:
@@ -419,13 +422,16 @@ def geocode(
     results: list[GeocodeResult] = []
     seen: set[tuple[int, int]] = set()
 
+    def add(result: GeocodeResult) -> None:
+        key = (int(result.lat * 20000), int(result.lon * 20000))
+        if key in seen:
+            return
+        seen.add(key)
+        results.append(result)
+
     if state is not None and state.places is not None:
         for hit in state.places.search(q, limit=limit, near=near):
-            key = (int(hit.place.lat * 20000), int(hit.place.lon * 20000))
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(
+            add(
                 GeocodeResult(
                     name=hit.place.name,
                     address=hit.place.address,
@@ -434,24 +440,55 @@ def geocode(
                 )
             )
 
-    # Reach outward when the local index came up short, or when a house
-    # number went unanswered. OSM's address coverage is good in DC but not
-    # complete, and returning only the street for "801 3rd St NW" is no use —
-    # 3rd Street NW runs for miles.
-    number = leading_house_number(q)
-    unmatched_number = number is not None and not any(
-        normalise(r.name).split()[:1] == [number] for r in results
+    # Reach outward when the local index came up short, or when an address
+    # query has not produced the exact doorway. OSM's address coverage in DC
+    # is good but not complete, and answering "801 3rd St NW" with the street
+    # is no answer at all — 3rd Street NW runs for miles.
+    query = parse_address(q)
+    exact_found = query.is_address and any(
+        _matches_address(query, r.name) for r in results
     )
 
-    if len(results) < 4 or unmatched_number:
+    if len(results) < 4 or (query.is_address and not exact_found):
         for row in _nominatim(q, limit):
-            key = (int(row.lat * 20000), int(row.lon * 20000))
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(row)
+            add(row)
+
+    if query.is_address:
+        results = _rank_addresses(query, results)
 
     return GeocodeResponse(results=results[:limit])
+
+
+def _matches_address(query, name: str) -> bool:
+    """Whether ``name`` is the exact doorway the query asked for."""
+    candidate = parse_address(name)
+    return (
+        candidate.house_number == query.house_number
+        and street_match(query, candidate) > 0.85
+    )
+
+
+def _rank_addresses(query, results: list[GeocodeResult]) -> list[GeocodeResult]:
+    """Re-rank merged results for an address query.
+
+    Runs over local and external results together, so wherever the exact
+    address came from it ends up on top. A stable sort keeps each source's own
+    ordering intact within a tier.
+    """
+
+    def rank(result: GeocodeResult) -> tuple[int, int]:
+        candidate = parse_address(result.name)
+        street = street_match(query, candidate)
+        if street <= 0.0:
+            # Not on the street that was asked for. Kept, because Nominatim
+            # occasionally names a building rather than its address, but last.
+            return (3, 0)
+        if candidate.house_number is None:
+            return (2, 0)  # the street itself
+        delta = abs(candidate.house_number - query.house_number)
+        return (0 if delta == 0 else 1, delta)
+
+    return sorted(results, key=rank)
 
 
 def _nominatim(q: str, limit: int) -> list[GeocodeResult]:
@@ -487,7 +524,7 @@ def _nominatim(q: str, limit: int) -> list[GeocodeResult]:
         try:
             out.append(
                 GeocodeResult(
-                    name=row.get("name") or display.split(",")[0],
+                    name=_nominatim_name(row, display),
                     address=display,
                     lat=float(row["lat"]),
                     lon=float(row["lon"]),
@@ -496,6 +533,22 @@ def _nominatim(q: str, limit: int) -> list[GeocodeResult]:
         except (KeyError, TypeError, ValueError):
             continue
     return out
+
+
+def _nominatim_name(row: dict, display: str) -> str:
+    """A usable label for a Nominatim row.
+
+    For a house-number hit Nominatim's own ``name`` is usually the bare number
+    or empty, and the first comma-separated chunk of ``display_name`` is just
+    as unhelpful. Rebuilding it from the address parts gives "801 3rd Street
+    Northwest", which is both readable and parseable by the address ranker.
+    """
+    address = row.get("address") or {}
+    number = address.get("house_number")
+    road = address.get("road")
+    if number and road:
+        return f"{number} {road}"
+    return row.get("name") or road or display.split(",")[0]
 
 
 @app.get("/reverse", response_model=GeocodeResponse)

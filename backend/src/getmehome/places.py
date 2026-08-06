@@ -100,13 +100,151 @@ CATEGORY_WEIGHT: dict[str, float] = {
     "other": 0.50,
 }
 
-# How hard to push addresses down when the query has no house number, and up
-# when it has one. Without this, typing "3rd st nw" surfaces an arbitrary
-# doorway on that street above the street itself, and typing "801 3rd st nw"
-# leaves the street — which is miles long and not an answer — on top.
+# How hard to push addresses down when the query has no house number. Without
+# this, typing "3rd st nw" surfaces an arbitrary doorway on that street above
+# the street itself.
 ADDRESS_WITHOUT_NUMBER_PENALTY = 0.35
-ADDRESS_WITH_NUMBER_BONUS = 1.6
 
+# --------------------------------------------------------------------------
+# Address parsing
+#
+# A street address is not a name that happens to contain digits, and treating
+# it as one is why "801 3rd St NW" used to return everything except the
+# building. Maps apps classify the query first and then run a matcher built
+# for that class, and this does the same: an address query is decomposed into
+# house number / street / street type / quadrant, and matched component by
+# component.
+#
+# The quadrant is the part that matters most in DC and least anywhere else.
+# 3rd Street NW and 3rd Street SE are different streets several kilometres
+# apart, so a quadrant mismatch is close to disqualifying rather than a tiebreak.
+# --------------------------------------------------------------------------
+
+QUADRANTS: frozenset[str] = frozenset(
+    {"northwest", "northeast", "southwest", "southeast"}
+)
+
+# Kept apart from the street name so "801 3rd NW" and "801 3rd St NW" agree.
+# People drop the street type constantly and it is almost never the part that
+# disambiguates.
+STREET_TYPES: frozenset[str] = frozenset(
+    {
+        "street", "avenue", "road", "drive", "boulevard", "place", "court",
+        "circle", "lane", "square", "terrace", "parkway", "highway", "alley",
+        "plaza", "way", "walk", "row", "mews", "crescent", "promenade",
+        "expressway", "freeway", "trail", "path", "loop", "run", "bridge",
+    }
+)
+
+# Words that introduce a unit, which is never part of the street name and
+# should not be matched against one.
+_UNIT_MARKERS: frozenset[str] = frozenset(
+    {"apartment", "unit", "suite", "ste", "floor", "fl", "room", "rm", "no"}
+)
+
+
+@dataclass(frozen=True)
+class ParsedAddress:
+    """A query or a place name, split into address components."""
+
+    house_number: int | None
+    # Street name with the house number, type and quadrant removed.
+    street: tuple[str, ...]
+    street_type: str
+    quadrant: str
+
+    @property
+    def is_address(self) -> bool:
+        """A house number plus something to attach it to."""
+        return self.house_number is not None and bool(self.street)
+
+    @property
+    def has_street(self) -> bool:
+        return bool(self.street)
+
+
+def parse_address(text: str) -> ParsedAddress:
+    """Split ``text`` into address components.
+
+    Works on raw text, not normalised text, because the house-number test has
+    to see the ordinal suffix: normalisation turns "3rd" into "3", and a
+    number-first rule applied afterwards reads "3rd St NW" as house number 3
+    and demotes the street the user actually asked for.
+    """
+    number = leading_house_number(text)
+    tokens = tokenise(text)
+    # A bare digit run survives normalisation unchanged (it is not an ordinal
+    # and not an abbreviation), so it is always the first token when present.
+    if number is not None and tokens and tokens[0] == number:
+        tokens = tokens[1:]
+
+    # Anything from a unit marker onwards is not part of the street.
+    for i, token in enumerate(tokens):
+        if token in _UNIT_MARKERS:
+            tokens = tokens[:i]
+            break
+
+    quadrant = ""
+    if tokens and tokens[-1] in QUADRANTS:
+        quadrant = tokens[-1]
+        tokens = tokens[:-1]
+
+    street_type = ""
+    if tokens and tokens[-1] in STREET_TYPES:
+        street_type = tokens[-1]
+        tokens = tokens[:-1]
+
+    return ParsedAddress(
+        house_number=int(number) if number is not None else None,
+        street=tuple(tokens),
+        street_type=street_type,
+        quadrant=quadrant,
+    )
+
+
+def street_match(query: ParsedAddress, candidate: ParsedAddress) -> float:
+    """How well two parsed street names agree, in [0, 1].
+
+    Zero means "different street", and for an address query that is a
+    rejection rather than a low rank — offering a doorway on the wrong street
+    is worse than offering nothing.
+    """
+    if not query.street or not candidate.street:
+        return 0.0
+
+    if query.street == candidate.street:
+        base = 1.0
+    elif len(query.street) <= len(candidate.street) and all(
+        candidate.street[i].startswith(token)
+        for i, token in enumerate(query.street)
+    ):
+        # A prefix of the street name, in order — "penn ave" for Pennsylvania
+        # Avenue. Docked slightly so a complete name always wins.
+        base = 0.90
+    else:
+        ratio = SequenceMatcher(
+            None, " ".join(query.street), " ".join(candidate.street)
+        ).ratio()
+        if ratio < 0.72:
+            return 0.0
+        base = 0.55 + 0.3 * ratio
+
+    # Quadrants. Both present and different is all but disqualifying: in DC
+    # that is a genuinely different street, typically kilometres away.
+    if query.quadrant and candidate.quadrant:
+        if query.quadrant != candidate.quadrant:
+            return base * 0.08
+    elif query.quadrant and not candidate.quadrant:
+        # The candidate may simply be unlabelled, so this is a mild doubt.
+        base *= 0.85
+
+    # Street types disagree only where a place genuinely has both a Foo Street
+    # and a Foo Avenue. Rare, but when it happens it is the whole answer.
+    if query.street_type and candidate.street_type:
+        if query.street_type != candidate.street_type:
+            base *= 0.55
+
+    return base
 
 
 def leading_house_number(text: str) -> str | None:
@@ -188,11 +326,19 @@ class PlaceIndex:
     # Trigram -> place indices, for matching through typos.
     _trigrams: dict[str, set[int]] = field(default_factory=dict, repr=False)
     _normalised: list[str] = field(default_factory=list, repr=False)
+    # Address components per place, parsed once at build time.
+    _parsed: list[ParsedAddress] = field(default_factory=list, repr=False)
+    # House number -> place indices, so an address query can jump straight to
+    # the doorways rather than fishing them out of a prefix scan over every
+    # place in the city whose name starts with the same digit.
+    _by_number: dict[int, list[int]] = field(default_factory=dict, repr=False)
 
     def build(self) -> PlaceIndex:
         self._tokens = []
         self._trigrams = {}
         self._normalised = []
+        self._parsed = []
+        self._by_number = {}
 
         for i, place in enumerate(self.places):
             normalised = normalise(place.name)
@@ -201,6 +347,11 @@ class PlaceIndex:
                 self._tokens.append((token, i))
             for gram in _trigrams_of(normalised):
                 self._trigrams.setdefault(gram, set()).add(i)
+
+            parsed = parse_address(place.name)
+            self._parsed.append(parsed)
+            if parsed.house_number is not None:
+                self._by_number.setdefault(parsed.house_number, []).append(i)
 
         self._tokens.sort()
         self._token_keys = [t for t, _ in self._tokens]
@@ -228,14 +379,107 @@ class PlaceIndex:
         if not tokens:
             return []
 
+        # Classify first, then run the matcher built for that class. A single
+        # scoring function tuned to handle both names and street addresses
+        # ends up doing neither well, which is what the address search did
+        # before this split.
+        parsed = parse_address(query)
+        if parsed.is_address:
+            return self._search_address(parsed, near=near, limit=limit)
+
+        return self._search_name(tokens, parsed, near=near, limit=limit)
+
+    # ------------------------------------------------------------------
+    # Street addresses
+    # ------------------------------------------------------------------
+
+    def _search_address(
+        self,
+        query: ParsedAddress,
+        near: tuple[float, float] | None,
+        limit: int,
+    ) -> list[ScoredPlace]:
+        """Rank for a query that names a specific doorway.
+
+        The ordering this produces, which is what people expect from a maps
+        app: the exact address first, then near-neighbours on the same street
+        (an address database is never complete, and 803 is a useful answer to
+        801), then the street itself as a fallback, and nothing from a
+        different street at all.
+        """
+        scored: list[ScoredPlace] = []
+        for i in self._address_candidates(query):
+            candidate = self._parsed[i]
+            street = street_match(query, candidate)
+            if street <= 0.0:
+                continue
+
+            place = self.places[i]
+            if candidate.house_number is not None:
+                delta = abs(candidate.house_number - query.house_number)
+                if delta == 0:
+                    base = 1.0
+                else:
+                    # Decays over roughly a block. Two doors down is nearly as
+                    # good; four hundred numbers away is a different part of a
+                    # street that can run for miles.
+                    base = 0.62 * math.exp(-delta / 60.0)
+            elif place.category == "street":
+                # Always available, always below any real doorway on it.
+                base = 0.55
+            else:
+                # A named venue on the right street but with no number of its
+                # own. Worth offering, but it is not what was asked for.
+                base = 0.30
+
+            score = base * street
+            if score < 0.05:
+                continue
+
+            distance = None
+            if near is not None:
+                distance = _haversine(near[0], near[1], place.lat, place.lon)
+                # Weaker than for name search: a house number is a precise
+                # request and proximity should not reorder it.
+                score *= 1.0 / (1.0 + distance / 8000.0) ** 0.2
+
+            scored.append(ScoredPlace(place=place, score=score, distance_m=distance))
+
+        scored.sort(key=lambda s: -s.score)
+        return _dedupe(scored)[:limit]
+
+    def _address_candidates(self, query: ParsedAddress) -> set[int]:
+        """Places worth scoring for an address query.
+
+        Every place carrying the requested house number, plus everything whose
+        name matches the street. Looking the number up directly matters: a
+        prefix scan for "801" also drags in every bus route and building name
+        beginning with those digits, and the cap on that scan can cut off
+        before it reaches the address itself.
+        """
+        candidates: set[int] = set(self._by_number.get(query.house_number, ()))
+
+        for token in query.street:
+            candidates |= self._prefix_matches(token)
+            if len(candidates) > 6000:
+                break
+        return candidates
+
+    # ------------------------------------------------------------------
+    # Names
+    # ------------------------------------------------------------------
+
+    def _search_name(
+        self,
+        tokens: list[str],
+        parsed: ParsedAddress,
+        near: tuple[float, float] | None,
+        limit: int,
+    ) -> list[ScoredPlace]:
         normalised_query = " ".join(tokens)
         candidates = self._candidates(tokens, normalised_query)
         if not candidates:
             return []
-
-        # A leading number means the user wants a specific doorway, not the
-        # street it is on.
-        house_number = leading_house_number(query)
 
         scored: list[ScoredPlace] = []
         for i in candidates:
@@ -248,14 +492,16 @@ class PlaceIndex:
             score *= 0.75 + 0.25 * CATEGORY_WEIGHT.get(place.category, 0.5)
 
             if place.category == "address":
-                if house_number is None:
-                    score *= ADDRESS_WITHOUT_NUMBER_PENALTY
-                elif text.split()[:1] == [house_number]:
-                    score *= ADDRESS_WITH_NUMBER_BONUS
-            elif house_number is not None and place.category == "street":
-                # The street is still worth offering as a fallback, but it
-                # should not outrank the address that was actually asked for.
-                score *= 0.6
+                # No house number was given, so an arbitrary doorway is not
+                # the answer — the street is.
+                score *= ADDRESS_WITHOUT_NUMBER_PENALTY
+
+            # A named quadrant is a real constraint even without a number:
+            # "3rd st nw" must not surface 3rd Street SE above it.
+            if parsed.quadrant and parsed.has_street:
+                candidate = self._parsed[i]
+                if candidate.quadrant and candidate.quadrant != parsed.quadrant:
+                    score *= 0.12
 
             distance = None
             if near is not None:

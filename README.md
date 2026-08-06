@@ -359,19 +359,44 @@ we control the matching, so it can be forgiving in the ways that count.
   fallback below the exact and prefix tiers.
 - **Proximity breaks ties**, which DC needs: there is a 14th Street in more
   than one quadrant.
-- **Street addresses resolve to a building, not a street.** OSM carries DC's
-  address points, so "801 3rd St NW" finds that doorway rather than offering
-  3rd Street NW, which runs for miles. A leading house number is detected on
-  the raw text rather than the normalised form, since normalising collapses
-  "3rd" to "3" and would otherwise read an ordinal street as a house number.
-
 Matching is tiered rather than one fuzzy ratio, so an exact match always beats
 a prefix match, which always beats a merely similar one. A bare similarity
 score does not guarantee that and gets embarrassing on short queries.
 
-Nominatim is consulted only when the local index returns few results, mostly
-for house-number addresses that OSM carries as interpolation rather than as
-named objects. If it is down, search degrades rather than breaking.
+### Street addresses
+
+A street address is not a name that happens to contain digits, and treating it
+as one is why "801 3rd St NW" used to return everything except the building.
+The query is **classified first and then matched by a matcher built for that
+class**, which is how Maps, Waze and Apple Maps all work.
+
+An address query is decomposed into house number, street name, street type and
+quadrant, and matched component by component:
+
+- **The street is a hard requirement.** A doorway on a different street is not
+  a worse answer, it is a wrong one, and it is dropped rather than ranked low.
+- **The quadrant is close to disqualifying** when it conflicts. This matters
+  more in DC than almost anywhere: 3rd Street NW and 3rd Street SE are
+  different streets several kilometres apart.
+- **The street type is optional.** People type "801 3rd NW" constantly, so
+  Street/Avenue/Road is parsed into its own slot and only decides anything
+  when a place genuinely has both a Foo Street and a Foo Avenue.
+- **Near house numbers are offered next.** Address data is never complete, and
+  803 is a useful answer to 801. The score decays over roughly a block, so a
+  number four hundred doors away falls off entirely.
+- **The street itself is the fallback**, always present and always below any
+  real doorway on it.
+
+The house number is detected on the raw text rather than the normalised form,
+since normalising collapses "3rd" to "3" and would otherwise read an ordinal
+street as a house number.
+
+Nominatim is consulted when the local index returns few results, or when an
+address query has not produced the exact doorway — OSM's DC address coverage
+is good but not complete. Its results are **merged into the ranking rather
+than appended to it**. Appending was the other half of the original bug: the
+local index would return four plausible near-misses and push the real answer
+to fifth. If Nominatim is down, search degrades rather than breaking.
 
 Recent searches and starred places are stored **on the device only**. Where
 someone goes regularly is among the more sensitive things an app can know,
