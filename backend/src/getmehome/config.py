@@ -130,6 +130,24 @@ class LightingConfig:
     # Illuminance considered "adequately lit". Scores saturate above this.
     reference_illuminance: float = 18.0
 
+    # Rank each segment's lighting against the rest of the city rather than
+    # against an absolute threshold.
+    #
+    # DC lights most of its streets, so on an absolute scale nearly everything
+    # scored near the top and every night route came back looking fine. What a
+    # pedestrian actually wants to know is comparative — is this darker than
+    # the alternative — and a percentile answers that directly. It also makes
+    # the model robust to the absolute calibration above being somewhat
+    # arbitrary, which it is.
+    rank_against_city: bool = True
+
+    # Applied to darkness (1 - lit) before it enters the risk. An exponent
+    # below 1 makes the curve rise steeply out of zero, so a street that is
+    # merely somewhat worse lit than its neighbours already carries a large
+    # share of the penalty instead of a proportional sliver. Set to 1.0 for a
+    # straight linear relationship.
+    darkness_exponent: float = 0.6
+
     # Sample the edge geometry at this spacing when measuring lighting.
     sample_spacing_m: float = 12.0
 
@@ -238,12 +256,24 @@ class CrimeConfig:
         }
     )
 
-    # Exponential recency decay. An incident from ~18 months ago counts about
-    # a third as much as one from last week.
+    # Selectable lookback windows, in days. The user picks one and only
+    # incidents inside it count, for both routing and the map.
+    #
+    # Each window is scored independently and normalised against its own
+    # distribution, so "worst areas in the last 30 days" means exactly that
+    # rather than being a faded version of the annual picture. Narrow windows
+    # are noisier — a month of DC data is a few thousand incidents — which is
+    # a real tradeoff for the user to make, not one to make for them.
+    windows_days: tuple[int, ...] = (30, 60, 180, 365)
+    default_window_days: int = 365
+
+    # No recency decay inside a window: the window is the recency filter, and
+    # decaying on top of it would mean "last 30 days" quietly weighting day 1
+    # against day 29. Kept for reference by anything scoring without a window.
     half_life_days: float = 400.0
 
-    # How far back to ingest. Three years balances a stable spatial signal
-    # against neighbourhoods genuinely changing.
+    # How far back to ingest. More than the longest window, so a longer one
+    # can be added without re-fetching.
     history_years: int = 3
 
     # Gaussian KDE bandwidth. ~150m is roughly a city block and a half, which
@@ -264,9 +294,12 @@ class RiskWeights:
     """How lighting, crime and street character combine into one risk value."""
 
     crime_day: float = 0.75
-    crime_night: float = 0.85
+    crime_night: float = 0.75
     darkness_day: float = 0.0  # daylight — streetlights are irrelevant
-    darkness_night: float = 0.90
+    # Lighting is the dominant night factor. It is the thing a pedestrian can
+    # see and act on, and unlike crime history it describes the street as it
+    # is tonight rather than as it has been.
+    darkness_night: float = 1.30
     isolation_day: float = 0.20
     isolation_night: float = 0.45
 

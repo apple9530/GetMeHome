@@ -185,6 +185,8 @@ def meta() -> MetaResponse:
         transitPatterns=len(network.patterns) if network else 0,
         places=len(state.places) if state.places else 0,
         crimeHistoryYears=m.get("crime_history_years", 0),
+        crimeWindows=list(state.graph.crime_windows),
+        defaultCrimeWindow=state.graph.resolved_window(None) or 0,
         bbox=m.get(
             "bbox",
             [DC_BBOX.min_lat, DC_BBOX.min_lon, DC_BBOX.max_lat, DC_BBOX.max_lon],
@@ -230,6 +232,17 @@ def route(request: RouteRequest) -> RouteResponse:
             detail="Destination is not near any walkable street in the DC area.",
         )
 
+    window = state.graph.resolved_window(request.crimeWindowDays)
+    if (
+        request.crimeWindowDays is not None
+        and window is not None
+        and window != request.crimeWindowDays
+    ):
+        notices.append(
+            f"Crime data was built for {window}-day windows; "
+            f"using {window} days instead of {request.crimeWindowDays}."
+        )
+
     modes = set(request.modes)
     if "transit" in modes and not state.has_transit:
         modes.discard("transit")
@@ -247,6 +260,7 @@ def route(request: RouteRequest) -> RouteResponse:
         transit=state.transit,
         cameras=state.cameras if state.cameras else None,
         destination_name=request.destinationName,
+        window_days=request.crimeWindowDays,
     )
 
     if not itineraries:
@@ -271,6 +285,7 @@ def route(request: RouteRequest) -> RouteResponse:
     return RouteResponse(
         itineraries=[_serialise(it, i) for i, it in enumerate(itineraries)],
         isNight=night,
+        crimeWindowDays=window or 0,
         generatedAt=datetime.now(UTC),
         notices=notices,
     )
@@ -313,6 +328,7 @@ def crime_grid(
     maxLat: float = Query(...),
     maxLon: float = Query(...),
     nightOnly: bool = Query(False),
+    windowDays: int | None = Query(None),
 ) -> CrimeGridResponse:
     """Incidents binned into hexagons over a bounding box.
 
@@ -323,13 +339,20 @@ def crime_grid(
     incident counts.
     """
     state = _require_state()
+    # Snap to a built window so the map and the route agree on the period,
+    # even if the client asks for one the graph was not built with.
+    window = state.graph.resolved_window(windowDays) if windowDays else None
     if state.crime is None or state.crime.count == 0:
         return CrimeGridResponse(
-            cells=[], radius=0.0, totalIncidents=0, nightOnly=nightOnly
+            cells=[],
+            radius=0.0,
+            totalIncidents=0,
+            nightOnly=nightOnly,
+            windowDays=window or 0,
         )
 
     cells, radius = state.crime.cells(
-        minLat, minLon, maxLat, maxLon, night_only=nightOnly
+        minLat, minLon, maxLat, maxLon, night_only=nightOnly, window_days=window
     )
 
     return CrimeGridResponse(
@@ -364,6 +387,7 @@ def crime_grid(
         radius=round(radius, 1),
         totalIncidents=sum(c.total for c in cells),
         nightOnly=nightOnly,
+        windowDays=window or 0,
     )
 
 

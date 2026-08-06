@@ -28,6 +28,9 @@ class RouteRequest(BaseModel):
     # Overrides the automatic sunset-based determination. Exposed mainly so a
     # user planning tomorrow's late walk can see the night scoring now.
     forceNight: bool | None = None
+    # How far back the crime data should look, in days. Omit for the graph's
+    # default. Values that were not built snap to the nearest one that was.
+    crimeWindowDays: int | None = None
 
     @field_validator("modes")
     @classmethod
@@ -103,6 +106,8 @@ class ItineraryModel(BaseModel):
 class RouteResponse(BaseModel):
     itineraries: list[ItineraryModel]
     isNight: bool
+    # The window actually used, after snapping the request to a built one.
+    crimeWindowDays: int = 0
     generatedAt: datetime
     # Present when the request succeeded but something was degraded, e.g.
     # transit was asked for but no GTFS feed is loaded.
@@ -162,6 +167,8 @@ class CrimeGridResponse(BaseModel):
     radius: float
     totalIncidents: int
     nightOnly: bool = False
+    # Lookback applied, in days. 0 means everything held.
+    windowDays: int = 0
 
 
 class GeocodeResult(BaseModel):
@@ -186,4 +193,7 @@ class MetaResponse(BaseModel):
     transitPatterns: int
     places: int = 0
     crimeHistoryYears: int
+    # Selectable crime lookback windows, in days, and which one is default.
+    crimeWindows: list[int] = []
+    defaultCrimeWindow: int = 0
     bbox: list[float]

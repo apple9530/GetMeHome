@@ -112,6 +112,44 @@ def illuminance_at(
     return contrib.sum(axis=1)
 
 
+def rank_scores(scores: np.ndarray) -> np.ndarray:
+    """Replace absolute lighting scores with their rank across the city.
+
+    The absolute scale has a calibration problem that no amount of tuning
+    ``reference_illuminance`` fixes: DC lights nearly all of its streets, so
+    almost every segment lands near the top of the curve and every night route
+    comes back looking fine. The differences between routes are real but they
+    live in the last few percent of the range, where they are swamped by the
+    other risk factors.
+
+    A rank answers the question the pedestrian is actually asking — is this
+    darker than the alternatives — and spreads the segments evenly over [0, 1]
+    so those differences survive into the score.
+
+    Ties take the *lowest* rank of their group, which matters for the large
+    block of segments with no lamp in range at all: they share a raw score of
+    zero and must all come out at zero, not at the middle of their tie.
+    """
+    n = len(scores)
+    if n < 2:
+        return np.zeros(n, dtype=np.float32) if n else scores.astype(np.float32)
+
+    order = np.argsort(scores, kind="stable")
+    sorted_scores = scores[order]
+    if sorted_scores[0] == sorted_scores[-1]:
+        # Everything ties, so there is no comparative information to extract.
+        # Ranking here would declare the whole city maximally dark.
+        return scores.astype(np.float32)
+
+    # Collapse each tie group onto its lowest rank.
+    group_start = np.zeros(n, dtype=np.float64)
+    is_new = np.concatenate([[True], sorted_scores[1:] != sorted_scores[:-1]])
+    starts = np.flatnonzero(is_new)
+    group_start[order] = np.repeat(starts, np.diff(np.append(starts, n)))
+
+    return (group_start / (n - 1)).astype(np.float32)
+
+
 def score_segments(
     segment_coords: list[list[tuple[float, float]]],
     lights: list[StreetLight],
@@ -122,6 +160,9 @@ def score_segments(
     The per-segment score blends the mean illuminance with the 20th
     percentile. Using the mean alone lets one bright lamp mask a long dark
     stretch, which is exactly the situation a pedestrian cares about.
+
+    With ``rank_against_city`` set, the blended scores are then converted to
+    ranks — see :func:`rank_scores`.
     """
     n = len(segment_coords)
     scores = np.zeros(n, dtype=np.float32)
@@ -166,4 +207,7 @@ def score_segments(
         s = point_scores[a:b]
         scores[i] = (1.0 - w) * float(s.mean()) + w * float(np.percentile(s, 20))
 
-    return np.clip(scores, 0.0, 1.0).astype(np.float32)
+    scores = np.clip(scores, 0.0, 1.0).astype(np.float32)
+    if cfg.rank_against_city and lights:
+        scores = rank_scores(scores)
+    return scores

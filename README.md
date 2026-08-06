@@ -87,14 +87,45 @@ four evenly spaced lamps, and a "count lamps within 50 m" heuristic cannot tell
 them apart. Each segment is sampled every 12 m and its score blends the mean
 with the 20th percentile, so a single bright lamp cannot mask a dark stretch.
 
+That absolute score is then **ranked against the rest of the city**, and this
+is the part that makes night scoring work at all. DC lights nearly all of its
+streets, so on an absolute scale almost every segment lands near the top of the
+curve and every night route comes back looking fine. The differences between
+routes are real, but they live in the last few percent of the range where the
+other factors swamp them. A percentile answers the question a pedestrian is
+actually asking — *is this darker than the alternative* — and spreads the
+segments evenly across [0, 1] so the difference survives into the score.
+
+Darkness then enters the risk as `(1 − lit) ^ 0.6`. The exponent is below one,
+so the curve rises steeply out of zero: a street somewhat worse lit than its
+neighbours already carries a large share of the penalty rather than a
+proportional sliver. Together with a night lighting weight of 1.30, a route
+with visibly fewer lamps is penalised hard rather than slightly.
+
 Lighting carries **zero weight in daylight**, switched on real solar elevation
 rather than a clock hour — DC sunset moves by nearly three hours across the
 year.
 
 ### Crime
 
-MPD incidents over three years, as a rasterised Gaussian KDE. Each incident is
-weighted by:
+MPD incidents as a rasterised Gaussian KDE, inside a lookback window the user
+picks: **30 days, 2 months, 6 months, or a year**. Only incidents inside the
+window count, and each window is scored and normalised against its own
+distribution — so "the worst areas in the last 30 days" means exactly that,
+rather than a faded copy of the annual picture. The window applies to the map
+grid and to route scoring together; a map showing a year of incidents beside a
+route scored on thirty days would be actively misleading.
+
+Windows are baked into the graph at build time, one pair of surfaces (day and
+night) per window. This is not an optimisation — a KDE over the whole city
+takes seconds, and the router needs every segment scored before it takes its
+first step.
+
+The shorter windows are noisier, and that tradeoff belongs to the user. A month
+of DC data is a few thousand incidents over 177 km²; a year is stable but slow
+to notice a neighbourhood changing.
+
+Inside a window each incident is weighted by:
 
 - **severity** — homicide and sexual abuse 1.0, assault with a dangerous
   weapon 0.90, robbery 0.85, then a deliberately wide gap down to burglary
@@ -109,7 +140,10 @@ weighted by:
   through, the least serious violent offence still outweighs the worst
   property offence by more than 20x.
 - **weapon** — a gun multiplies by 1.4, a knife by 1.2
-- **recency** — exponential decay with a 400-day half-life
+
+There is deliberately **no recency decay inside a window**. The window is the
+recency filter; decaying on top of it would quietly weight day 1 against day 29
+of a period the user asked to treat as one.
 
 Day and night surfaces are built separately from MPD's shift field, because
 the streets that are risky at 2am are not the ones that are risky at 2pm.

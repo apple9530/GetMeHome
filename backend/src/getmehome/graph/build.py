@@ -157,14 +157,26 @@ def build(
         },
     )
 
-    log.info("scoring %d segments", graph.n_segments)
-    apply_scores(graph, lights, incidents, cameras)
+    log.info(
+        "scoring %d segments across %d crime windows",
+        graph.n_segments, len(CRIME.windows_days),
+    )
+    apply_scores(graph, lights, incidents, cameras, progress=log.info)
 
     graph.meta["lit_median"] = round(float(np.median(graph.seg_lit)), 3)
+    graph.meta["crime_windows"] = list(graph.crime_windows)
     graph.meta["crime_night_median"] = round(
         float(np.median(graph.seg_crime_night)), 3
     )
     graph.meta["camera_exposed_segments"] = int((graph.seg_camera > 0.15).sum())
+
+    # Night risk spread, recorded so a build can be checked against the
+    # complaint that started this: if the interquartile range is tiny, the
+    # score is not discriminating between routes and the weights need work.
+    night_risk = graph.segment_risk(is_night=True)
+    q1, q3 = (float(v) for v in np.percentile(night_risk, [25, 75]))
+    graph.meta["night_risk_p25"] = round(q1, 3)
+    graph.meta["night_risk_p75"] = round(q3, 3)
 
     graph.save(GRAPH_FILE, GRAPH_META_FILE)
     log.info("wrote %s (%.1f MB)", GRAPH_FILE, GRAPH_FILE.stat().st_size / 1e6)
@@ -289,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
         f"\nBuilt graph: {graph.n_nodes:,} nodes, {graph.n_segments:,} segments\n"
         f"  median lighting score : {graph.meta.get('lit_median')}\n"
         f"  median night crime    : {graph.meta.get('crime_night_median')}\n"
+        f"  night risk p25 - p75  : {graph.meta.get('night_risk_p25')}"
+        f" - {graph.meta.get('night_risk_p75')}\n"
+        f"  crime windows (days)  : {graph.meta.get('crime_windows')}\n"
         f"  camera-exposed segs   : {graph.meta.get('camera_exposed_segments'):,}\n"
     )
     return 0

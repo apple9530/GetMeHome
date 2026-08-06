@@ -155,6 +155,9 @@ struct Itinerary: Codable, Hashable, Identifiable {
 struct RouteResponse: Codable {
     let itineraries: [Itinerary]
     let isNight: Bool
+    /// The crime lookback the server actually used, after snapping the request
+    /// to one it was built with. Optional so an older server still decodes.
+    let crimeWindowDays: Int?
     let generatedAt: Date
     let notices: [String]
 }
@@ -169,6 +172,7 @@ struct RouteRequest: Codable {
     let modes: [String]
     let avoidCameras: Bool
     let forceNight: Bool?
+    let crimeWindowDays: Int?
 }
 
 // MARK: - Overlays
@@ -251,6 +255,8 @@ struct CrimeGridResponse: Codable {
     let radius: Double
     let totalIncidents: Int
     let nightOnly: Bool
+    /// Lookback applied, in days. 0 or nil means everything the server holds.
+    let windowDays: Int?
 }
 
 struct GeocodeResult: Codable, Hashable, Identifiable {
@@ -295,5 +301,9 @@ struct ServerMeta: Codable {
     let transitPatterns: Int
     let places: Int
     let crimeHistoryYears: Int
+    /// Windows the graph was built with. Optional: an older server omits it,
+    /// and the picker falls back to the full set rather than showing nothing.
+    let crimeWindows: [Int]?
+    let defaultCrimeWindow: Int?
     let bbox: [Double]
 }

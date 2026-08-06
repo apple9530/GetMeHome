@@ -250,3 +250,51 @@ def test_step_voice_and_display_text_differ_usefully(client):
     with_distance = [s for s in steps if " for " in s["instruction"]]
     assert with_distance
     assert all(" for " not in s["voice"] for s in with_distance)
+
+
+# ---------------------------------------------------------------------------
+# Crime lookback windows
+# ---------------------------------------------------------------------------
+
+
+def test_meta_advertises_the_available_windows(client):
+    body = client.get("/meta").json()
+    assert body["crimeWindows"] == [30, 60, 180, 365]
+    assert body["defaultCrimeWindow"] in body["crimeWindows"]
+
+
+def test_route_echoes_the_window_it_used(client):
+    body = client.post("/route", json=_route_body(crimeWindowDays=30)).json()
+    assert body["crimeWindowDays"] == 30
+
+
+def test_an_unbuilt_window_snaps_and_says_so(client):
+    body = client.post("/route", json=_route_body(crimeWindowDays=90)).json()
+    assert body["crimeWindowDays"] == 60
+    assert any("60 days" in n for n in body["notices"])
+
+
+def test_omitting_the_window_uses_the_default(client):
+    body = client.post("/route", json=_route_body()).json()
+    assert body["crimeWindowDays"] == 365
+    assert not any("window" in n.lower() for n in body["notices"])
+
+
+def test_crime_grid_accepts_a_window(client):
+    params = {
+        "minLat": 38.895,
+        "minLon": -77.035,
+        "maxLat": 38.906,
+        "maxLon": -77.022,
+        "windowDays": 30,
+    }
+    narrow = client.get("/crime/grid", params=params).json()
+    everything = client.get(
+        "/crime/grid", params={k: v for k, v in params.items() if k != "windowDays"}
+    ).json()
+
+    assert narrow["windowDays"] == 30
+    assert everything["windowDays"] == 0
+    # The fixture spreads incidents back over most of a year, so a 30-day view
+    # must be a strict subset.
+    assert narrow["totalIncidents"] < everything["totalIncidents"]

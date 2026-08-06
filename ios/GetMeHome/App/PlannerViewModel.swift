@@ -333,7 +333,8 @@ final class PlannerViewModel {
                 destinationName: destinationName,
                 modes: settings.modes,
                 avoidCameras: settings.avoidCameras,
-                forceNight: settings.timeOfDay.forceNight
+                forceNight: settings.timeOfDay.forceNight,
+                crimeWindowDays: settings.crimeWindow.rawValue
             )
 
             itineraries = response.itineraries
@@ -374,6 +375,16 @@ final class PlannerViewModel {
     /// fires while a request is in flight, since the user has just changed the
     /// question being asked.
     func rescoreForTimeOfDay() async {
+        guard destination != nil else { return }
+        await requestRoutes()
+    }
+
+    /// Re-score for a different crime lookback, and repaint the grid with it.
+    ///
+    /// Both together, always: a map showing a year of incidents next to a
+    /// route scored on thirty days would be actively misleading.
+    func changeCrimeWindow() async {
+        invalidateOverlays()
         guard destination != nil else { return }
         await requestRoutes()
     }
@@ -426,7 +437,9 @@ final class PlannerViewModel {
 
             if settings.showCrimeGrid {
                 if let response = try? await client.crimeGrid(
-                    in: bounds, nightOnly: settings.crimeGridNightOnly
+                    in: bounds,
+                    nightOnly: settings.crimeGridNightOnly,
+                    windowDays: settings.crimeWindow.rawValue
                 ), !Task.isCancelled {
                     crimeCells = response.cells
                     crimeCellRadius = response.radius
@@ -438,10 +451,15 @@ final class PlannerViewModel {
         }
     }
 
-    /// Force the next `refreshOverlays` to refetch even if the viewport has
-    /// not moved — used when a toggle changes what should be shown.
+    /// Refetch the overlays for the viewport already on screen.
+    ///
+    /// Called when a setting changes what should be drawn. Clearing the cached
+    /// bounds alone is not enough: nothing refetches until the map moves, so a
+    /// toggle would appear to do nothing until the user panned.
     func invalidateOverlays() {
+        guard let bounds = lastOverlayBounds else { return }
         lastOverlayBounds = nil
+        refreshOverlays(for: bounds)
     }
 
     func dismissError() {

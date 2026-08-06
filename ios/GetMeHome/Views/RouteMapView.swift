@@ -288,6 +288,7 @@ struct CrimeCellSheet: View {
     let cell: CrimeCell
     let radius: Double
 
+    @Environment(AppSettings.self) private var settings
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -296,9 +297,15 @@ struct CrimeCellSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("\(cell.total) incident\(cell.total == 1 ? "" : "s")")
                         .font(.title2.bold())
-                    Text("Within about \(Int(radius)) m of here")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // Naming the window matters: "12 incidents" means
+                    // something very different over 30 days than over a year,
+                    // and the number alone does not say which you are seeing.
+                    Text(
+                        "Within about \(Int(radius)) m · last "
+                            + settings.crimeWindow.label
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {

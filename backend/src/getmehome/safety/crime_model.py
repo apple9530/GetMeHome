@@ -7,9 +7,12 @@ Three things distinguish this from "count crimes near the street":
   *pedestrian relevance* — how much it says about the risk to someone walking
   past. A burglary is a serious crime that tells you relatively little about
   street safety, and the two factors let us express that.
-* **Recency decay.** Neighbourhoods change. Incidents decay exponentially so
-  that last month weighs more than three years ago without throwing away the
-  older data that gives the surface its stability.
+* **A lookback window.** Neighbourhoods change, and how far back to look is a
+  judgement the user is better placed to make than we are. A surface is built
+  per window (30 / 60 / 180 / 365 days) and only incidents inside it count.
+  Within a window there is no further decay — the window *is* the recency
+  filter, and decaying on top of it would quietly weight day 1 against day 29
+  of a month the user asked to treat as one period.
 * **Time of day.** MPD tags every incident with a shift (day / evening /
   midnight). We build separate day and night surfaces, because the streets
   that are risky at 2am are not the same ones that are risky at 2pm.
@@ -47,18 +50,43 @@ class CrimeIncident:
 
 
 def incident_weight(
-    incident: CrimeIncident, now: datetime, cfg: CrimeConfig = CRIME
+    incident: CrimeIncident,
+    now: datetime,
+    cfg: CrimeConfig = CRIME,
+    decay: bool = True,
 ) -> float:
-    """Combined severity x relevance x weapon x recency weight."""
+    """Combined severity x relevance x weapon weight, optionally decayed.
+
+    ``decay=False`` is what window-scoped scoring uses: inside a window every
+    incident counts equally, because the window already expresses how far back
+    the user wants to look.
+    """
     offense = (incident.offense or "").strip().upper()
     severity = cfg.severity.get(offense, cfg.default_severity)
     relevance = cfg.pedestrian_relevance.get(offense, cfg.default_relevance)
     method = cfg.method_multiplier.get((incident.method or "").strip().upper(), 1.0)
 
-    age_days = max(0.0, (now - incident.reported_at).total_seconds() / 86400.0)
-    recency = math.exp(-math.log(2.0) * age_days / cfg.half_life_days)
+    weight = severity * relevance * method
+    if not decay:
+        return weight
 
-    return severity * relevance * method * recency
+    age_days = max(0.0, (now - incident.reported_at).total_seconds() / 86400.0)
+    return weight * math.exp(-math.log(2.0) * age_days / cfg.half_life_days)
+
+
+def within_window(
+    incidents: list[CrimeIncident], window_days: int | None, now: datetime
+) -> list[CrimeIncident]:
+    """Incidents reported within ``window_days`` of ``now``.
+
+    ``None`` means no filter. Incidents dated in the future — MPD's feed does
+    occasionally contain one — are kept rather than dropped, since a clock
+    skew of hours should not silently remove a real report.
+    """
+    if window_days is None:
+        return list(incidents)
+    cutoff = now.timestamp() - window_days * 86400.0
+    return [i for i in incidents if i.reported_at.timestamp() >= cutoff]
 
 
 class CrimeSurface:
@@ -75,10 +103,19 @@ class CrimeSurface:
         now: datetime | None = None,
         cfg: CrimeConfig = CRIME,
         cell_size_m: float | None = None,
+        window_days: int | None = None,
     ) -> None:
         self.cfg = cfg
         self.now = now or datetime.now(UTC)
         self.cell_size = cell_size_m or max(10.0, cfg.kernel_bandwidth_m / 6.0)
+        self.window_days = window_days
+
+        # Inside a window every incident counts the same; outside one (no
+        # window given) fall back to exponential decay so the surface still
+        # favours recent history.
+        decay = window_days is None
+        incidents = within_window(incidents, window_days, self.now)
+        self.n_incidents = len(incidents)
 
         if not incidents:
             self._empty = True
@@ -94,7 +131,8 @@ class CrimeSurface:
         x, y = to_local(lat, lon)
 
         weights = np.array(
-            [incident_weight(i, self.now, cfg) for i in incidents], dtype=np.float64
+            [incident_weight(i, self.now, cfg, decay=decay) for i in incidents],
+            dtype=np.float64,
         )
         is_night = np.array(
             [(i.shift or "").strip().upper() in NIGHT_SHIFTS for i in incidents]

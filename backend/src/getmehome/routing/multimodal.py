@@ -83,23 +83,28 @@ class TransitIndex:
         self.network = network
         self.index = index
         self.stop_node: list[int] = []
-        self.stop_risk_day: list[float] = []
-        self.stop_risk_night: list[float] = []
 
         graph = index.graph
-        day_risk = graph.segment_risk(is_night=False)
-        night_risk = graph.segment_risk(is_night=True)
+        # Snap every stop once, then read its risk out of each (window, period)
+        # surface. Twelve thousand stops times eight surfaces is a few hundred
+        # kilobytes and saves re-snapping on every request.
+        self.windows = list(graph.crime_windows) or [None]
+        risk = {
+            (w, night): graph.segment_risk(night, w)
+            for w in self.windows
+            for night in (False, True)
+        }
+        self._stop_risk: dict[tuple, list[float]] = {k: [] for k in risk}
 
         for stop in network.stops:
             snap = index.snap(stop.lat, stop.lon, max_distance_m=150.0)
-            if snap is None:
-                self.stop_node.append(-1)
-                self.stop_risk_day.append(0.5)
-                self.stop_risk_night.append(0.5)
-                continue
-            self.stop_node.append(snap.node_a)
-            self.stop_risk_day.append(float(day_risk[snap.seg_id]))
-            self.stop_risk_night.append(float(night_risk[snap.seg_id]))
+            self.stop_node.append(-1 if snap is None else snap.node_a)
+            for key, arr in risk.items():
+                # An unsnappable stop gets a neutral 0.5 rather than 0: we do
+                # not know it is safe, we know nothing about it.
+                self._stop_risk[key].append(
+                    0.5 if snap is None else float(arr[snap.seg_id])
+                )
 
         # node -> stops standing on it, for the one-to-many lookup.
         self.node_stops: dict[int, list[int]] = {}
@@ -107,8 +112,9 @@ class TransitIndex:
             if node >= 0:
                 self.node_stops.setdefault(node, []).append(si)
 
-    def stop_risk(self, is_night: bool) -> list[float]:
-        return self.stop_risk_night if is_night else self.stop_risk_day
+    def stop_risk(self, is_night: bool, window_days: int | None = None) -> list[float]:
+        window = self.index.graph.resolved_window(window_days)
+        return self._stop_risk[(window, is_night)]
 
     def reachable_stops(
         self,
@@ -146,6 +152,7 @@ def _walk_leg(
     times: list[float],
     is_night: bool,
     destination_name: str,
+    window_days: int | None = None,
 ) -> ItineraryLeg | None:
     """Route and describe one walking leg."""
     path = shortest_path(index, a, b, costs, times)
@@ -157,8 +164,12 @@ def _walk_leg(
         distance_m=path.distance_m,
         duration_s=path.duration_s,
         coords=path.coords,
-        steps=build_steps(graph, path.legs, is_night, destination_name),
-        safety=score_route(graph, [leg.edge_id for leg in path.legs], is_night),
+        steps=build_steps(
+            graph, path.legs, is_night, destination_name, window_days
+        ),
+        safety=score_route(
+            graph, [leg.edge_id for leg in path.legs], is_night, window_days
+        ),
     )
 
 
@@ -206,6 +217,7 @@ def build_transit_itinerary(
     destination_name: str,
     label: str,
     cameras: list[AlprCamera] | None = None,
+    window_days: int | None = None,
 ) -> Itinerary | None:
     """Turn a RAPTOR journey into a full itinerary with real walk geometry."""
     index = transit.index
@@ -218,7 +230,8 @@ def build_transit_itinerary(
         return None
 
     access = _walk_leg(
-        index, origin, access_snap, costs, times, is_night, first_stop.name
+        index, origin, access_snap, costs, times, is_night, first_stop.name,
+        window_days,
     )
     if access is None:
         return None  # genuinely unroutable
@@ -232,7 +245,9 @@ def build_transit_itinerary(
             sa = index.snap(a.lat, a.lon, max_distance_m=150.0)
             sb = index.snap(b.lat, b.lon, max_distance_m=150.0)
             if sa and sb:
-                walk = _walk_leg(index, sa, sb, costs, times, is_night, b.name)
+                walk = _walk_leg(
+                    index, sa, sb, costs, times, is_night, b.name, window_days
+                )
                 if walk is not None and walk.distance_m >= MIN_WALK_LEG_M:
                     walk.from_stop_name = a.name
                     walk.to_stop_name = b.name
@@ -268,7 +283,8 @@ def build_transit_itinerary(
     if egress_snap is None:
         return None
     egress = _walk_leg(
-        index, egress_snap, destination, costs, times, is_night, destination_name
+        index, egress_snap, destination, costs, times, is_night, destination_name,
+        window_days,
     )
     if egress is None:
         return None
@@ -326,6 +342,7 @@ def plan(
     transit: TransitIndex | None = None,
     cameras: list[AlprCamera] | None = None,
     destination_name: str = "your destination",
+    window_days: int | None = None,
 ) -> list[Itinerary]:
     """Produce the full set of itineraries for a request."""
     graph = index.graph
@@ -333,10 +350,16 @@ def plan(
 
     if "walk" in modes:
         for option in compute_options(
-            index, origin, destination, is_night, avoid_cameras, cameras
+            index,
+            origin,
+            destination,
+            is_night,
+            avoid_cameras,
+            cameras,
+            window_days=window_days,
         ):
             steps = build_steps(
-                graph, option.path.legs, is_night, destination_name
+                graph, option.path.legs, is_night, destination_name, window_days
             )
             leg = ItineraryLeg(
                 mode="walk",
@@ -374,6 +397,7 @@ def plan(
                 avoid_cameras,
                 cameras,
                 destination_name,
+                window_days,
             )
         )
 
@@ -390,10 +414,11 @@ def _plan_transit(
     avoid_cameras: bool,
     cameras: list[AlprCamera] | None,
     destination_name: str,
+    window_days: int | None = None,
 ) -> list[Itinerary]:
     graph = index.graph
     depart_s = _seconds_since_midnight(when)
-    stop_risk = transit.stop_risk(is_night)
+    stop_risk = transit.stop_risk(is_night, window_days)
 
     out: list[Itinerary] = []
     seen: set[tuple] = set()
@@ -404,7 +429,9 @@ def _plan_transit(
         ("Fastest", ROUTING.lambda_fastest, False),
         ("Safest", ROUTING.lambda_safest, True),
     ):
-        cost_arr, time_arr = graph.edge_costs(is_night, lam, avoid_cameras)
+        cost_arr, time_arr = graph.edge_costs(
+            is_night, lam, avoid_cameras, window_days
+        )
         costs, times = cost_arr.tolist(), time_arr.tolist()
 
         access = transit.reachable_stops(
@@ -447,6 +474,7 @@ def _plan_transit(
                 destination_name,
                 label,
                 cameras,
+                window_days,
             )
             if itinerary is not None:
                 out.append(itinerary)

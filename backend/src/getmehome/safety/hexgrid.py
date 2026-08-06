@@ -163,8 +163,9 @@ class CrimeCell:
     center_lat: float
     center_lon: float
     total: int
-    # Severity-weighted, recency-decayed intensity in [0, 1], normalised
-    # against the busiest cell in the response.
+    # Severity-weighted intensity in [0, 1], normalised against the busiest
+    # cell in the response. Incidents outside the requested lookback window
+    # are excluded entirely rather than down-weighted.
     intensity: float
     # Ordered by weighted contribution, not by raw count.
     by_offense: list[OffenseBreakdown]
@@ -241,8 +242,11 @@ class CrimeIndex:
         return cls(
             lat=np.array([i.lat for i in incidents], dtype=np.float64),
             lon=np.array([i.lon for i in incidents], dtype=np.float64),
+            # Undecayed: the lookback window the caller picks is the recency
+            # filter, so an incident either counts or it does not.
             weight=np.array(
-                [incident_weight(i, now, cfg) for i in incidents], dtype=np.float32
+                [incident_weight(i, now, cfg, decay=False) for i in incidents],
+                dtype=np.float32,
             ),
             offense_ids=np.array(ids, dtype=np.int16),
             is_night=np.array(
@@ -265,8 +269,15 @@ class CrimeIndex:
         radius_m: float | None = None,
         night_only: bool = False,
         max_offense_kinds: int = 6,
+        window_days: int | None = None,
+        now: datetime | None = None,
     ) -> tuple[list[CrimeCell], float]:
         """Aggregate incidents in a bounding box into hexes.
+
+        ``window_days`` restricts the aggregation to incidents reported in the
+        last N days; ``None`` counts everything held. The map and the router
+        take the same window, so the grid a user is looking at is the data
+        their route was scored against.
 
         Returns the cells and the radius actually used, so the client can draw
         the hexagons at the right size.
@@ -287,6 +298,9 @@ class CrimeIndex:
         )
         if night_only:
             mask &= self.is_night
+        if window_days is not None:
+            reference = now or datetime.now(UTC)
+            mask &= self.timestamps >= reference.timestamp() - window_days * 86400.0
         if not mask.any():
             return [], radius
 

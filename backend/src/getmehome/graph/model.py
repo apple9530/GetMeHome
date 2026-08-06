@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..config import CAMERAS, ISOLATION, RISK, ROUTING
+from ..config import CAMERAS, CRIME, ISOLATION, LIGHTING, RISK, ROUTING
 
 
 @dataclass
@@ -39,8 +39,11 @@ class WalkGraph:
     seg_geom_ptr: np.ndarray  # int32 (n_segs + 1,) offsets into seg_geom
     seg_geom: np.ndarray  # float32 (n_coords, 2) lat/lon
     seg_length: np.ndarray  # float32 (n_segs,) metres
-    seg_crime_day: np.ndarray  # float32 (n_segs,) normalised 0-1
-    seg_crime_night: np.ndarray  # float32 (n_segs,)
+    # Crime scores for every selectable lookback window, normalised 0-1.
+    # Shape (n_windows, 2, n_segs); axis 1 is [day, night]. Each window is
+    # scored and normalised independently, so "the last 30 days" is its own
+    # picture of the city rather than a faded copy of the annual one.
+    seg_crime: np.ndarray  # float32
     seg_lit: np.ndarray  # float32 (n_segs,) 0=dark, 1=well lit
     seg_isolation: np.ndarray  # float32 (n_segs,) 0-1
     seg_camera: np.ndarray  # float32 (n_segs,) ALPR exposure 0-1
@@ -59,6 +62,8 @@ class WalkGraph:
 
     names: list[str]
     highways: list[str]
+    # Lookback in days for each slice of ``seg_crime``, in the same order.
+    crime_windows: list[int]
     meta: dict
 
     # ------------------------------------------------------------------
@@ -101,24 +106,73 @@ class WalkGraph:
         return self.adj_edges[self.adj_ptr[node] : self.adj_ptr[node + 1]]
 
     # ------------------------------------------------------------------
+    # Crime windows
+    # ------------------------------------------------------------------
+
+    def window_index(self, window_days: int | None) -> int:
+        """Slice of ``seg_crime`` for a requested lookback.
+
+        Unknown values snap to the nearest available window rather than
+        raising: a client asking for 90 days should get the closest thing the
+        graph was built with, not an error.
+        """
+        if not self.crime_windows:
+            return 0
+        if window_days is None:
+            window_days = CRIME.default_window_days
+        return min(
+            range(len(self.crime_windows)),
+            key=lambda i: abs(self.crime_windows[i] - window_days),
+        )
+
+    def resolved_window(self, window_days: int | None) -> int | None:
+        """The window actually used for a request, after snapping."""
+        if not self.crime_windows:
+            return None
+        return self.crime_windows[self.window_index(window_days)]
+
+    def crime_scores(self, is_night: bool, window_days: int | None = None) -> np.ndarray:
+        """Per-segment crime score for one window and time of day."""
+        return self.seg_crime[self.window_index(window_days), 1 if is_night else 0]
+
+    @property
+    def seg_crime_day(self) -> np.ndarray:
+        """Default-window daytime crime, for callers that do not pick one."""
+        return self.crime_scores(is_night=False)
+
+    @property
+    def seg_crime_night(self) -> np.ndarray:
+        return self.crime_scores(is_night=True)
+
+    # ------------------------------------------------------------------
     # Risk
     # ------------------------------------------------------------------
 
-    def segment_risk(self, is_night: bool) -> np.ndarray:
+    def segment_risk(
+        self, is_night: bool, window_days: int | None = None
+    ) -> np.ndarray:
         """Per-segment composite risk in [0, 1] for the given period.
 
         This is the number the router's cost function is built on. The three
         components are combined as a weighted mean (not a sum), so the result
         stays in [0, 1] and the weights stay interpretable as "how much does
         this factor matter" rather than needing to sum to one.
+
+        Darkness is raised to ``LIGHTING.darkness_exponent`` first. With an
+        exponent below 1 the curve rises steeply out of zero, so a street that
+        is merely somewhat worse lit than its neighbours already carries a
+        substantial share of the penalty rather than a proportional sliver.
+        Without it, DC's near-universal street lighting compresses every
+        candidate route into the same narrow band and the night score stops
+        discriminating between them at all.
         """
         w_crime, w_dark, w_iso = RISK.for_period(is_night)
         total = w_crime + w_dark + w_iso
         if total <= 0:
             return np.zeros(self.n_segments, dtype=np.float32)
 
-        crime = self.seg_crime_night if is_night else self.seg_crime_day
-        darkness = 1.0 - self.seg_lit
+        crime = self.crime_scores(is_night, window_days)
+        darkness = np.clip(1.0 - self.seg_lit, 0.0, 1.0) ** LIGHTING.darkness_exponent
         risk = (
             w_crime * crime + w_dark * darkness + w_iso * self.seg_isolation
         ) / total
@@ -129,6 +183,7 @@ class WalkGraph:
         is_night: bool,
         risk_lambda: float,
         avoid_cameras: bool = False,
+        window_days: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Per-directed-edge (cost, base_time) arrays.
 
@@ -139,7 +194,7 @@ class WalkGraph:
 
         ``base_time`` is the honest walking time, reported to the user.
         """
-        seg_risk = self.segment_risk(is_night)
+        seg_risk = self.segment_risk(is_night, window_days)
         seg_time = self.seg_length / ROUTING.walk_speed_mps
 
         multiplier = 1.0 + risk_lambda * seg_risk
@@ -164,8 +219,8 @@ class WalkGraph:
             seg_geom_ptr=self.seg_geom_ptr,
             seg_geom=self.seg_geom,
             seg_length=self.seg_length,
-            seg_crime_day=self.seg_crime_day,
-            seg_crime_night=self.seg_crime_night,
+            seg_crime=self.seg_crime,
+            crime_windows=np.array(self.crime_windows, dtype=np.int32),
             seg_lit=self.seg_lit,
             seg_isolation=self.seg_isolation,
             seg_camera=self.seg_camera,
@@ -191,6 +246,19 @@ class WalkGraph:
         z = np.load(path, allow_pickle=False)
         meta_path = meta_path or path.with_name(path.stem + "_meta.json")
         sidecar = json.loads(Path(meta_path).read_text())
+
+        if "seg_crime" in z:
+            seg_crime = z["seg_crime"]
+            crime_windows = [int(w) for w in z["crime_windows"]]
+        else:
+            # A graph built before crime windows existed. Present its single
+            # pair of surfaces as one window so the app still runs; the window
+            # picker will show one option until the graph is rebuilt.
+            seg_crime = np.stack(
+                [np.stack([z["seg_crime_day"], z["seg_crime_night"]])]
+            ).astype(np.float32)
+            crime_windows = [CRIME.default_window_days]
+
         return cls(
             node_lat=z["node_lat"],
             node_lon=z["node_lon"],
@@ -199,8 +267,8 @@ class WalkGraph:
             seg_geom_ptr=z["seg_geom_ptr"],
             seg_geom=z["seg_geom"],
             seg_length=z["seg_length"],
-            seg_crime_day=z["seg_crime_day"],
-            seg_crime_night=z["seg_crime_night"],
+            seg_crime=seg_crime,
+            crime_windows=crime_windows,
             seg_lit=z["seg_lit"],
             seg_isolation=z["seg_isolation"],
             seg_camera=z["seg_camera"],
@@ -349,8 +417,10 @@ def build_graph(
             np.concatenate(geom_parts) if geom_parts else np.zeros((0, 2), np.float32)
         ),
         seg_length=np.array(seg_len, dtype=np.float32),
-        seg_crime_day=np.zeros(len(segments), dtype=np.float32),
-        seg_crime_night=np.zeros(len(segments), dtype=np.float32),
+        seg_crime=np.zeros(
+            (len(CRIME.windows_days), 2, len(segments)), dtype=np.float32
+        ),
+        crime_windows=list(CRIME.windows_days),
         seg_lit=np.zeros(len(segments), dtype=np.float32),
         seg_isolation=np.array(seg_iso, dtype=np.float32),
         seg_camera=np.zeros(len(segments), dtype=np.float32),

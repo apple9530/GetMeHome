@@ -102,13 +102,16 @@ def format_distance(metres: float) -> str:
 
 
 def _safety_note(
-    graph: WalkGraph, seg_ids: list[int], is_night: bool
+    graph: WalkGraph,
+    seg_ids: list[int],
+    is_night: bool,
+    window_days: int | None = None,
 ) -> str:
     """A short warning if the stretch ahead is dark or high-crime."""
     if not seg_ids:
         return ""
     lit = float(sum(graph.seg_lit[s] for s in seg_ids) / len(seg_ids))
-    crime_arr = graph.seg_crime_night if is_night else graph.seg_crime_day
+    crime_arr = graph.crime_scores(is_night, window_days)
     crime = float(sum(crime_arr[s] for s in seg_ids) / len(seg_ids))
 
     if is_night and lit < 0.2:
@@ -136,6 +139,7 @@ def build_steps(
     legs: list[PathLeg],
     is_night: bool,
     destination_name: str = "your destination",
+    window_days: int | None = None,
 ) -> list[NavStep]:
     """Turn a path into a list of navigation steps."""
     if not legs:
@@ -211,7 +215,7 @@ def build_steps(
                 duration_s=duration,
                 start_index=coord_cursor,
                 location=location,
-                safety_note=_safety_note(graph, seg_ids, is_night),
+                safety_note=_safety_note(graph, seg_ids, is_night, window_days),
                 voice_triggers=[d for d in VOICE_TRIGGERS if d < distance],
             )
         )

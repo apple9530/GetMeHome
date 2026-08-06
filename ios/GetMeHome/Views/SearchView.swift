@@ -458,6 +458,26 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Crime data from the last", selection: $settings.crimeWindow) {
+                        ForEach(CrimeWindow.allCases) { window in
+                            Text(window.label).tag(window)
+                        }
+                    }
+                } header: {
+                    Text("Crime data")
+                } footer: {
+                    Text(
+                        "Only incidents inside this window count — towards the "
+                            + "map and towards route scores alike. A shorter "
+                            + "window reacts faster to a changing area; a longer "
+                            + "one is steadier."
+                    )
+                }
+                .onChange(of: settings.crimeWindow) { _, _ in
+                    Task { await planner.changeCrimeWindow() }
+                }
+
+                Section {
                     Toggle("Show Flock Cameras", isOn: $settings.showCameraOverlay)
                     Toggle("Show crime grid", isOn: $settings.showCrimeGrid)
                     if settings.showCrimeGrid {

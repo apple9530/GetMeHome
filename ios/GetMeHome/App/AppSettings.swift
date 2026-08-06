@@ -42,6 +42,50 @@ enum TimeOfDay: String, CaseIterable, Identifiable {
     }
 }
 
+/// How far back the crime data should look.
+///
+/// The tradeoff is real and belongs to the user, not to us: a year is stable
+/// but slow to notice a neighbourhood changing, while 30 days reacts fast and
+/// is noisy — a month of DC data is a few thousand incidents spread over 177
+/// square kilometres. Both are defensible; which one you want depends on
+/// whether you are asking "what is this area like" or "what has been happening
+/// lately".
+enum CrimeWindow: Int, CaseIterable, Identifiable {
+    case month = 30
+    case twoMonths = 60
+    case sixMonths = 180
+    case year = 365
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .month: "30 days"
+        case .twoMonths: "2 months"
+        case .sixMonths: "6 months"
+        case .year: "1 year"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .month: "30d"
+        case .twoMonths: "2mo"
+        case .sixMonths: "6mo"
+        case .year: "1yr"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .month: "Only the last 30 days of reports — recent, but noisy."
+        case .twoMonths: "The last two months of reports."
+        case .sixMonths: "The last six months of reports."
+        case .year: "A full year of reports — the steadiest picture."
+        }
+    }
+}
+
 /// User preferences, persisted in `UserDefaults`.
 @Observable
 @MainActor
@@ -84,6 +128,12 @@ final class AppSettings {
         didSet { defaults.set(timeOfDay.rawValue, forKey: Keys.timeOfDay) }
     }
 
+    /// Applies to the route scores and the map grid together, so what you are
+    /// looking at is always the data your route was scored against.
+    var crimeWindow: CrimeWindow {
+        didSet { defaults.set(crimeWindow.rawValue, forKey: Keys.crimeWindow) }
+    }
+
     var serverURL: URL {
         URL(string: serverURLString) ?? URL(string: Self.defaultServer)!
     }
@@ -103,6 +153,7 @@ final class AppSettings {
         static let includeTransit = "includeTransit"
         static let voice = "voiceGuidance"
         static let timeOfDay = "timeOfDay"
+        static let crimeWindow = "crimeWindowDays"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -118,5 +169,8 @@ final class AppSettings {
         timeOfDay = TimeOfDay(
             rawValue: defaults.string(forKey: Keys.timeOfDay) ?? ""
         ) ?? .auto
+        crimeWindow = CrimeWindow(
+            rawValue: defaults.integer(forKey: Keys.crimeWindow)
+        ) ?? .year
     }
 }

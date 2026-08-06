@@ -77,7 +77,8 @@ actor RoutingClient {
         modes: [String],
         avoidCameras: Bool,
         departAt: Date? = nil,
-        forceNight: Bool? = nil
+        forceNight: Bool? = nil,
+        crimeWindowDays: Int? = nil
     ) async throws -> RouteResponse {
         let body = RouteRequest(
             origin: Coordinate(lat: origin.latitude, lon: origin.longitude),
@@ -86,7 +87,8 @@ actor RoutingClient {
             departAt: departAt,
             modes: modes,
             avoidCameras: avoidCameras,
-            forceNight: forceNight
+            forceNight: forceNight,
+            crimeWindowDays: crimeWindowDays
         )
         return try await post("/route", body: body)
     }
@@ -97,10 +99,15 @@ actor RoutingClient {
         try await get("/cameras", query: region.queryItems)
     }
 
-    func crimeGrid(in region: MapBounds, nightOnly: Bool) async throws -> CrimeGridResponse {
+    func crimeGrid(
+        in region: MapBounds, nightOnly: Bool, windowDays: Int? = nil
+    ) async throws -> CrimeGridResponse {
         var items = region.queryItems
         if nightOnly {
             items.append(URLQueryItem(name: "nightOnly", value: "true"))
+        }
+        if let windowDays {
+            items.append(URLQueryItem(name: "windowDays", value: String(windowDays)))
         }
         return try await get("/crime/grid", query: items)
     }

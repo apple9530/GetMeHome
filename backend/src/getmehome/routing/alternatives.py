@@ -66,6 +66,7 @@ def compute_options(
     avoid_cameras: bool = False,
     cameras: list[AlprCamera] | None = None,
     lambdas: dict[str, float] | None = None,
+    window_days: int | None = None,
 ) -> list[RouteOption]:
     """Compute the fastest / balanced / safest options for a walk."""
     graph = index.graph
@@ -78,7 +79,10 @@ def compute_options(
     found: list[tuple[str, PathResult]] = []
     for kind in ("fastest", "balanced", "safest"):
         cost_arr, time_arr = graph.edge_costs(
-            is_night, lambdas[kind], avoid_cameras=avoid_cameras
+            is_night,
+            lambdas[kind],
+            avoid_cameras=avoid_cameras,
+            window_days=window_days,
         )
         path = shortest_path(
             index, start, end, cost_arr.tolist(), time_arr.tolist()
@@ -106,7 +110,7 @@ def compute_options(
         for _ in range(3):
             lam *= 0.5
             cost_arr, time_arr = graph.edge_costs(
-                is_night, lam, avoid_cameras=avoid_cameras
+                is_night, lam, avoid_cameras=avoid_cameras, window_days=window_days
             )
             retry = shortest_path(
                 index, start, end, cost_arr.tolist(), time_arr.tolist()
@@ -142,7 +146,9 @@ def compute_options(
     options: list[RouteOption] = []
     for i, (_, path) in enumerate(kept):
         kinds = merged_kinds[i]
-        safety = score_route(graph, [leg.edge_id for leg in path.legs], is_night)
+        safety = score_route(
+            graph, [leg.edge_id for leg in path.legs], is_night, window_days
+        )
         label = _merged_label(kinds)
         options.append(
             RouteOption(
