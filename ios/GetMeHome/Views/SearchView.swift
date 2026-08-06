@@ -216,7 +216,12 @@ struct SearchView: View {
             placeRow(result, isStarred: planner.places.isStarred(result))
         }
 
-        if planner.isSearching {
+        if let searchError = planner.searchError {
+            Label(searchError, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .padding()
+        } else if planner.isSearching {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text("Searching…").font(.caption).foregroundStyle(.secondary)

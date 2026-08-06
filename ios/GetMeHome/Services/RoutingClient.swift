@@ -44,8 +44,16 @@ actor RoutingClient {
     init(baseURL: URL) {
         self.baseURL = baseURL
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 20
-        config.waitsForConnectivity = true
+        config.timeoutIntervalForRequest = 15
+        // Ceiling on the whole transfer. Without it the default is seven days.
+        config.timeoutIntervalForResource = 30
+
+        // Must stay false. `waitsForConnectivity = true` makes URLSession park
+        // a request indefinitely when the host is unreachable instead of
+        // failing — which, for a search box, means a spinner that never stops
+        // and never explains itself. Failing fast lets the UI say the server
+        // is unreachable.
+        config.waitsForConnectivity = false
         self.session = URLSession(configuration: config)
     }
 

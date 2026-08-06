@@ -160,6 +160,9 @@ def health() -> dict:
     return {
         "status": "ok",
         "segments": state.graph.n_segments,
+        "streetlights": state.graph.meta.get("n_lights", 0),
+        "crimeIncidents": state.crime.count if state.crime else 0,
+        "searchablePlaces": len(state.places) if state.places else 0,
         "transit": state.has_transit,
         "cameras": len(state.cameras),
     }

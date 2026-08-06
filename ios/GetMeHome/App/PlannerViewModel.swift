@@ -25,6 +25,10 @@ final class PlannerViewModel {
     private(set) var crimeCellRadius: Double = 0
     private(set) var errorMessage: String?
     private(set) var isSearching = false
+    /// Shown inline beneath the field. Kept apart from `errorMessage`,
+    /// which drives a modal alert — an alert per keystroke while the
+    /// server is unreachable is unusable.
+    private(set) var searchError: String?
 
     /// Both ends of the route. Origin defaults to wherever the user is, which
     /// is the overwhelmingly common case, but is fully editable.
@@ -72,6 +76,9 @@ final class PlannerViewModel {
     private let location: LocationService
     private let settings: AppSettings
 
+    /// Increments per search so a stale task can tell it has been
+    /// superseded and leave the newer one's state alone.
+    private var searchGeneration = 0
     private var searchTask: Task<Void, Never>?
     private var overlayTask: Task<Void, Never>?
     private var lastOverlayBounds: MapBounds?
@@ -111,6 +118,7 @@ final class PlannerViewModel {
     func beginEditing(_ field: RouteField) {
         editingField = field
         searchResults = []
+        searchError = nil
         searchTask?.cancel()
 
         let hasCommittedValue = (field == .origin) ? true : destination != nil
@@ -129,6 +137,7 @@ final class PlannerViewModel {
         searchTask?.cancel()
         searchResults = []
         isSearching = false
+        searchError = nil
         // Put back whatever was committed, so an abandoned edit does not leave
         // the field looking empty when a route is still set.
         withoutSearching {
@@ -238,6 +247,7 @@ final class PlannerViewModel {
 
     private func scheduleSearch(_ text: String) {
         searchTask?.cancel()
+        searchError = nil
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.count >= 2 else {
             searchResults = []
@@ -246,10 +256,22 @@ final class PlannerViewModel {
         }
 
         isSearching = true
+        searchGeneration += 1
+        let generation = searchGeneration
+
         searchTask = Task { [weak self] in
             guard let self else { return }
-            // Debounce: the geocoder is rate-limited and a request per
-            // keystroke gets throttled within a few words.
+
+            // Every exit path has to clear the spinner, including the early
+            // returns on cancellation — otherwise a superseded keystroke
+            // leaves it turning forever. Guarding on the generation means a
+            // stale task cannot switch off a spinner that a newer one owns.
+            defer {
+                if generation == searchGeneration { isSearching = false }
+            }
+
+            // Debounce: a request per keystroke is wasteful, and the external
+            // geocoder behind the local index rate-limits.
             try? await Task.sleep(for: .milliseconds(320))
             guard !Task.isCancelled else { return }
 
@@ -257,14 +279,19 @@ final class PlannerViewModel {
                 let results = try await client.geocode(
                     query, near: location.location?.coordinate
                 )
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, generation == searchGeneration else { return }
                 searchResults = results
+            } catch is CancellationError {
+                return
+            } catch let error as URLError where error.code == .cancelled {
+                return
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, generation == searchGeneration else { return }
                 searchResults = []
-                errorMessage = Self.message(for: error)
+                // Shown inline under the field rather than as an alert: an
+                // alert per keystroke while the server is down is unusable.
+                searchError = Self.message(for: error)
             }
-            isSearching = false
         }
     }
 
@@ -272,6 +299,7 @@ final class PlannerViewModel {
         searchTask?.cancel()
         searchResults = []
         isSearching = false
+        searchError = nil
     }
 
     /// Empty the field being edited, for the clear button.
