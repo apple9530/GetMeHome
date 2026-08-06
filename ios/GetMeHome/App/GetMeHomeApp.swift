@@ -61,10 +61,19 @@ struct RootView: View {
     @Environment(SpeechService.self) private var speech
     @Environment(AppSettings.self) private var settings
 
-    @State private var cameraPosition: MapCameraPosition = .region(
-        MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 38.9047, longitude: -77.0164),
-            span: MKCoordinateSpan(latitudeDelta: 0.09, longitudeDelta: 0.09)
+    /// Framed on the user's location once there is a fix, and on nothing in
+    /// particular before then.
+    ///
+    /// It used to be hardcoded to DC's centre, which is wrong the moment there
+    /// is a second city — and briefly showing the wrong city is a worse first
+    /// impression than showing a wide view for a second. Picking a city moves
+    /// it explicitly.
+    @State private var cameraPosition: MapCameraPosition = .userLocation(
+        fallback: .region(
+            MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 39.5, longitude: -75.5),
+                span: MKCoordinateSpan(latitudeDelta: 6, longitudeDelta: 6)
+            )
         )
     )
     @State private var navigationModel: NavigationViewModel?

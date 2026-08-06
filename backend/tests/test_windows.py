@@ -21,11 +21,15 @@ from getmehome.safety.crime_model import (
     incident_weight,
     within_window,
 )
-from getmehome.safety.hexgrid import CrimeIndex
 from getmehome.safety.lighting import rank_scores
 from getmehome.safety.scoring import apply_scores, score_route
 
-from .fixtures import build_grid_graph, dense_lights_along_column, grid_coords
+from .fixtures import (
+    build_grid_graph,
+    dc_crime_index,
+    dense_lights_along_column,
+    grid_coords,
+)
 
 # Real wall-clock, not a fixed date: the build path measures incident ages
 # against "now", so a fixture pinned to a past date would drift out of the
@@ -200,7 +204,7 @@ def test_the_graph_round_trips_all_windows(tmp_path, scored_graph):
 
 
 def test_the_hex_grid_honours_the_same_window():
-    index = CrimeIndex.from_incidents(
+    index = dc_crime_index(
         incidents_at(2, 2, 30, age_days=5) + incidents_at(2, 2, 30, age_days=200),
         now=NOW,
     )
