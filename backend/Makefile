@@ -4,15 +4,22 @@
 PY ?= python3
 export PYTHONPATH := src
 
+# Which city to act on. Everything below is per-city: builds, downloads and
+# deployed data all live under data/<city>/.
+CITY ?= dc
+
 help:
 	@echo "GetMeHome backend"
 	@echo ""
 	@echo "  make install       install dependencies"
 	@echo "  make test          run the test suite"
 	@echo "  make lint          run ruff"
-	@echo "  make gtfs          download WMATA GTFS feeds (needs WMATA_API_KEY)"
-	@echo "  make graph         build the routing graph (downloads DC data)"
+	@echo "  make gtfs          download this city's GTFS feeds"
+	@echo "  make graph         build the routing graph for CITY (default: dc)"
+	@echo "  make graph-all     build every known city in turn"
 	@echo "  make graph-refresh rebuild, re-downloading streetlights and crime"
+	@echo ""
+	@echo "  Set CITY=nyc on any of the above. e.g. make graph CITY=nyc"
 	@echo "  make serve         run the API on :8000"
 	@echo "  make docker        build the container image"
 	@echo ""
@@ -29,25 +36,20 @@ test:
 lint:
 	$(PY) -m ruff check src tests
 
+# Downloads whatever feeds CITY declares. WMATA gates its static feeds behind
+# the same key as its real-time API; the MTA publishes its openly, so NYC needs
+# no key for this step.
 gtfs:
-	@if [ -z "$$WMATA_API_KEY" ]; then \
-		echo "WMATA_API_KEY is not set."; \
-		echo "Get a free key at https://developer.wmata.com/ and:"; \
-		echo "    export WMATA_API_KEY=..."; \
-		exit 1; \
-	fi
-	@mkdir -p data/raw
-	curl -sSf -H "api_key: $$WMATA_API_KEY" \
-		"https://api.wmata.com/gtfs/bus-gtfs-static.zip" -o data/raw/wmata-bus-gtfs.zip
-	curl -sSf -H "api_key: $$WMATA_API_KEY" \
-		"https://api.wmata.com/gtfs/rail-gtfs-static.zip" -o data/raw/wmata-rail-gtfs.zip
-	@echo "GTFS feeds downloaded to data/raw/"
+	$(PY) -m getmehome.ingest.fetch_gtfs --city $(CITY)
 
 graph:
-	$(PY) -m getmehome.graph.build
+	$(PY) -m getmehome.graph.build --city $(CITY)
+
+graph-all:
+	$(PY) -m getmehome.graph.build --all
 
 graph-refresh:
-	$(PY) -m getmehome.graph.build --refresh
+	$(PY) -m getmehome.graph.build --city $(CITY) --refresh
 
 serve:
 	$(PY) -m uvicorn getmehome.api.main:app --host 0.0.0.0 --port 8000 --reload
@@ -60,12 +62,12 @@ docker:
 # from the ingest step. So it has to be copied to the server separately.
 
 data-manifest:
-	@echo "Files the server loads at startup:"
-	@ls -lh data/build 2>/dev/null || \
-		{ echo "  (nothing built yet — run 'make graph')"; exit 1; }
+	@echo "Files the server loads at startup for $(CITY):"
+	@ls -lh data/$(CITY)/build 2>/dev/null || \
+		{ echo "  (nothing built — run 'make graph CITY=$(CITY)')"; exit 1; }
 	@echo ""
 	@echo "Total:"
-	@du -sh data/build
+	@du -sh data/$(CITY)/build
 	@echo ""
 	@echo "Roughly this much RAM is needed on top of the Python runtime;"
 	@echo "the arrays are decompressed on load, so allow noticeably more"
@@ -74,10 +76,14 @@ data-manifest:
 # Copy the build output to a host running deploy/docker-compose.yml.
 #   make deploy-data HOST=root@getmehome.example.com
 # --delete so a renamed or removed artefact does not linger and get loaded.
+# Every built city goes across in one pass — the server discovers what it has
+# from the directory layout, so a partial copy silently removes a city.
 deploy-data:
 	@if [ -z "$$HOST" ]; then echo "Set HOST=user@server"; exit 1; fi
-	@if [ ! -d data/build ]; then echo "Nothing built — run 'make graph'"; exit 1; fi
-	rsync -avz --delete data/build/ "$$HOST:~/getmehome/deploy/data/"
+	@if [ ! -d data ]; then echo "Nothing built — run 'make graph'"; exit 1; fi
+	rsync -avz --delete \
+		--include="*/" --include="build/**" --exclude="raw/**" --exclude="*" \
+		data/ "$$HOST:~/getmehome/deploy/data/"
 	@echo ""
 	@echo "Now restart the API so it loads the new graph:"
 	@echo "    ssh $$HOST 'cd getmehome/deploy && docker compose restart api'"
@@ -93,5 +99,5 @@ deploy-fly:
 	fly apps restart
 
 clean:
-	rm -rf data/build
+	rm -rf data/*/build
 	find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true

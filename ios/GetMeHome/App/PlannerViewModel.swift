@@ -488,6 +488,18 @@ final class PlannerViewModel {
         }
     }
 
+    /// Drop everything drawn for the previous city.
+    func clearOverlays() {
+        overlayTask?.cancel()
+        lastOverlayBounds = nil
+        cameras = []
+        crimeCells = []
+        transitStops = []
+        transitStopsTruncated = false
+        selectedCell = nil
+        selectedStop = nil
+    }
+
     /// Refetch the overlays for the viewport already on screen.
     ///
     /// Called when a setting changes what should be drawn. Clearing the cached

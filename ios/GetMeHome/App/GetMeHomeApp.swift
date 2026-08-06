@@ -38,6 +38,12 @@ struct GetMeHomeApp: App {
                 .task {
                     location.requestAuthorization()
                     location.startUpdating()
+                    // The client has to know the city before any request goes
+                    // out, including the first overlay fetch on appear.
+                    await client.updateCity(settings.citySlug)
+                }
+                .onChange(of: settings.citySlug) { _, slug in
+                    Task { await client.updateCity(slug) }
                 }
                 .onChange(of: settings.serverURLString) { _, newValue in
                     guard let url = URL(string: newValue) else { return }
@@ -62,6 +68,7 @@ struct RootView: View {
         )
     )
     @State private var navigationModel: NavigationViewModel?
+    @State private var showCityPicker = false
 
     var body: some View {
         @Bindable var planner = planner
@@ -106,6 +113,27 @@ struct RootView: View {
         }
         .onChange(of: settings.includeTransit) { _, _ in
             Task { await planner.refreshRoutes() }
+        }
+        // Blocks everything until a city is chosen. There is nothing
+        // meaningful to show before then: the map, the search index and the
+        // safety data are all city-specific.
+        .fullScreenCover(isPresented: .constant(!settings.hasChosenCity)) {
+            CityPickerView(current: nil) { city in
+                adopt(city)
+            }
+        }
+        .sheet(isPresented: $showCityPicker) {
+            CityPickerView(
+                current: settings.citySlug,
+                onSelect: { city in
+                    showCityPicker = false
+                    adopt(city)
+                },
+                onCancel: { showCityPicker = false }
+            )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .changeCityRequested)) { _ in
+            showCityPicker = true
         }
         .fullScreenCover(isPresented: isNavigating) {
             if let navigationModel {
@@ -155,6 +183,22 @@ struct RootView: View {
             .transition(.move(edge: .bottom))
         case .navigating:
             EmptyView()
+        }
+    }
+
+    /// Switch cities.
+    ///
+    /// Everything held from the previous city is dropped rather than
+    /// reinterpreted — a route, a set of overlays and a search history all
+    /// refer to places that no longer exist on this map, and leaving them on
+    /// screen would be worse than a moment's blank.
+    private func adopt(_ city: CityInfo) {
+        let changed = settings.citySlug != city.slug
+        settings.select(city)
+        if changed {
+            planner.cancelRouting()
+            planner.clearOverlays()
+            withAnimation { cameraPosition = .region(city.mapRegion) }
         }
     }
 
@@ -214,4 +258,10 @@ struct RootView: View {
             )
         )
     }
+}
+
+extension Notification.Name {
+    /// Raised from Settings, which is presented as a sheet from the search
+    /// panel and so cannot itself present the city picker over the top.
+    static let changeCityRequested = Notification.Name("GetMeHome.changeCityRequested")
 }

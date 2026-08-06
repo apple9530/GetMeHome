@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import MapKit
 
 // Mirrors the backend's response schema. The API emits camelCase precisely so
 // these decode without a custom key strategy.
@@ -158,6 +159,7 @@ struct RouteResponse: Codable {
     /// The crime lookback the server actually used, after snapping the request
     /// to one it was built with. Optional so an older server still decodes.
     let crimeWindowDays: Int?
+    let city: String?
     let generatedAt: Date
     let notices: [String]
 }
@@ -173,6 +175,7 @@ struct RouteRequest: Codable {
     let avoidCameras: Bool
     let forceNight: Bool?
     let crimeWindowDays: Int?
+    let city: String?
 }
 
 // MARK: - Overlays
@@ -305,6 +308,8 @@ struct ServerMeta: Codable {
     /// and the picker falls back to the full set rather than showing nothing.
     let crimeWindows: [Int]?
     let defaultCrimeWindow: Int?
+    let city: String?
+    let cityName: String?
     let bbox: [Double]
 }
 
@@ -479,4 +484,66 @@ struct ShareStatus: Codable {
     let pollAfterSeconds: Int
 
     var isActive: Bool { status == "active" }
+}
+
+// MARK: - Cities
+
+/// One city the server can route in.
+struct CityInfo: Codable, Hashable, Identifiable {
+    let slug: String
+    let name: String
+    let region: String
+    let centerLat: Double
+    let centerLon: Double
+    /// [minLat, minLon, maxLat, maxLon]
+    let bbox: [Double]
+    let timezone: String
+    /// Whether the server has actually built it. A configured-but-unbuilt city
+    /// is still listed so the app can say what is missing rather than
+    /// pretending it does not exist.
+    let available: Bool
+    /// Whether it is resident in memory server-side. The first request for a
+    /// city that is not loaded takes several seconds while its graph comes off
+    /// disk, which is worth warning about rather than looking like a hang.
+    let loaded: Bool
+
+    var id: String { slug }
+
+    var center: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon)
+    }
+
+    /// A span that frames the whole city.
+    var span: MKCoordinateSpan {
+        guard bbox.count == 4 else {
+            return MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
+        }
+        return MKCoordinateSpan(
+            latitudeDelta: max(0.05, (bbox[2] - bbox[0]) * 1.05),
+            longitudeDelta: max(0.05, (bbox[3] - bbox[1]) * 1.05)
+        )
+    }
+
+    var mapRegion: MKCoordinateRegion {
+        MKCoordinateRegion(center: center, span: span)
+    }
+
+    func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        guard bbox.count == 4 else { return false }
+        return coordinate.latitude >= bbox[0] && coordinate.latitude <= bbox[2]
+            && coordinate.longitude >= bbox[1] && coordinate.longitude <= bbox[3]
+    }
+
+    var symbolName: String {
+        switch slug {
+        case "dc": "building.columns.fill"
+        case "nyc": "building.2.fill"
+        default: "mappin.and.ellipse"
+        }
+    }
+}
+
+struct CitiesResponse: Codable {
+    let cities: [CityInfo]
+    let defaultCity: String
 }

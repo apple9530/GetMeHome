@@ -27,11 +27,20 @@ Worth being straight about this before you invest time in it.
 | iOS app | Compiles and launches; UI beyond that not exercised here |
 | The DC data build (`make graph`) | Streetlight + crime ingestion fixed against the real feeds |
 | WMATA **real-time** (live buses, predictions) | Written against the published API, **never run against it** — see below |
+| Every **New York** data source | Written against published schemas, **never run against them** — see below |
 
-The real-time transit feeds are the one part with no test coverage against
-reality: `api.wmata.com` was unreachable from the build environment, so the
-response parsing is written from WMATA's published field names and has never
-seen a real payload. Everything there fails soft by design — a wrong field name
+Nothing New York touches has been run against a real feed. NYC Open Data, the
+MTA's GTFS endpoints and `api.wmata.com` were all unreachable from the build
+environment, so every NYC schema — NYPD's complaint columns, DOT's street light
+columns, the MTA's feed URLs — comes from published documentation rather than
+from a response anyone has seen. The DC path is unaffected and still covered.
+
+Expect the first `make graph CITY=nyc` to need a column name changed. The build
+is written for that: every field goes through a candidate list, and it logs
+loudly when a large share of incidents fall outside the crime vocabulary, which
+is what a renamed offence column looks like.
+
+The real-time feeds have the same gap in both cities: Everything there fails soft by design — a wrong field name
 degrades to scheduled times rather than to an error — so the failure mode is
 "live never appears", not a broken app. If that is what you see, the parsing in
 `ingest/wmata_live.py` is the first place to look.
@@ -72,6 +81,108 @@ naming: **Apple's MapKit cannot do this**. `MKDirections` returns Apple's
 routes and gives you no way to re-weight the underlying edges, so a genuine
 safety router has to own its own graph. Once you own the graph, putting it
 behind an API means crime data refreshes daily without an App Store release.
+
+---
+
+## Cities
+
+Two: **Washington, DC** and **New York City**. The app asks which on first
+launch and it can be changed from Settings; the server serves either, and can
+serve both at once.
+
+Adding a city means adding a record to `backend/src/getmehome/cities.py` — its
+extent, projection origin, data sources and crime vocabulary — plus an ingest
+adapter if its feeds are on a platform not already supported. Nothing else in
+the codebase learns its name.
+
+### What actually differs between cities
+
+Three things, and each of them fails silently rather than loudly if it is got
+wrong, which is why they are called out here.
+
+**The projection.** Distances are computed in a local equirectangular frame,
+and its east-west scale is `cos(origin_lat)`. This used to be a module-level
+constant at DC's centre. Projecting New York through it shrinks every east-west
+distance by 2.6% — about a kilometre across the city, in a direction nothing
+would ever flag as an error. So each city has its own frame, and it is **stored
+with the data** rather than looked up: a graph carries the frame its node
+coordinates were built in, as does the crime raster and the hex grid. Loading a
+graph cannot pick up the wrong one.
+
+The polyline helpers — length, resampling, simplification — take no frame at
+all. Measuring one line only needs a frame local to that line, so they anchor
+on its own first vertex. That is correct in any city with nothing to thread
+through, and marginally more accurate than a city-wide frame even at home.
+
+**The crime vocabulary.** MPD publishes `ASSAULT W/DANGEROUS WEAPON` and
+`THEFT F/AUTO`; NYPD publishes `FELONY ASSAULT` and `GRAND LARCENY OF MOTOR
+VEHICLE`. Different vocabularies for different legal categories, with less than
+a third overlap. One shared table would fall through to the default weight for
+every offence in the other city and turn the crime surface into a map of where
+people are. Each city carries its own severity, pedestrian-relevance, display-
+name and category tables; the build refuses to run if they are internally
+inconsistent, and warns when real incidents land outside the vocabulary —
+which is the exact symptom of a table written against the wrong city.
+
+Two NYPD-specific judgements worth naming: `FELONY ASSAULT` is the violent one
+and sits with robbery, while plain `ASSAULT 3 & RELATED OFFENSES` is a
+misdemeanour covering a lot of non-street conduct and is weighted far lower;
+and grand versus petit larceny is a distinction about value taken rather than
+about risk to a passer-by, so both sit near the bottom.
+
+**Time of day.** MPD stamps every incident with a shift. NYPD stamps a
+timestamp, so a shift is derived from the hour — using MPD's own tour
+boundaries, which is what keeps the two cities' night surfaces comparable
+rather than one being a police tour and the other an arbitrary cut.
+
+### Data sources
+
+| | Washington | New York |
+|---|---|---|
+| Streets | Geofabrik DC extract | Geofabrik New York State extract |
+| Crime | MPD, ArcGIS MapServer | NYPD complaints, Socrata (`5uac-w243`, `qgea-i56i`) |
+| Streetlights | DDOT, ArcGIS | DOT street light poles, Socrata |
+| Transit (static) | WMATA rail + bus GTFS | MTA subway + five borough bus GTFS |
+| Transit (real-time) | WMATA JSON REST | MTA GTFS-Realtime protobuf |
+
+The ingest adapter is chosen on the *platform* — ArcGIS or Socrata — rather
+than on the city, so a third city on either is no new ingest code.
+
+### Real-time is two protocols, not two URLs
+
+WMATA serves JSON over REST; the MTA serves GTFS-Realtime protobuf. The
+`LiveProvider` interface is written around what both can answer, and the MTA
+implementation is better in one respect: GTFS-RT carries the static feed's own
+`trip_id`, so predictions join the timetable **exactly**. WMATA's real-time trip
+ids do not reliably match its static feed, so predictions there are matched on
+route and rough time — a heuristic that occasionally attaches a prediction to
+the wrong departure.
+
+Neither agency publishes train coordinates, so a train's position is estimated
+between stations in both cities and labelled as an estimate. Buses report real
+positions in both.
+
+The MTA client needs `gtfs-realtime-bindings`, which is an optional dependency:
+a Washington-only deployment has no reason to install protobuf, and its absence
+disables live NYC data rather than breaking the import.
+
+### Building and serving more than one
+
+```bash
+make graph CITY=dc          # or CITY=nyc, or `make graph-all`
+make gtfs  CITY=nyc         # six feeds for New York, two for DC
+```
+
+Artefacts land in `data/<slug>/build`, so cities cannot overwrite each other.
+The server discovers what is built from that layout.
+
+Cities **load lazily and are never evicted**. Holding both resident costs the
+memory of the larger, and New York's is considerably larger — its OSM extract
+covers the whole state. A deployment serving one city should not pay for the
+other. The cost is a slow first request per city after a restart, which is why
+the app asks for a city up front rather than on the first route, and why
+`GETMEHOME_PRELOAD_CITIES` exists for deployments that would rather pay it at
+boot.
 
 ---
 

@@ -401,6 +401,41 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    Button {
+                        // Settings is itself a sheet, so it cannot present the
+                        // picker over the top. The root view does it instead.
+                        dismiss()
+                        NotificationCenter.default.post(
+                            name: .changeCityRequested, object: nil
+                        )
+                    } label: {
+                        HStack {
+                            Label(
+                                settings.cityName.isEmpty
+                                    ? "Choose a city"
+                                    : settings.cityName,
+                                systemImage: "mappin.and.ellipse"
+                            )
+                            Spacer()
+                            Text("Change")
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("City")
+                } footer: {
+                    Text(
+                        "Safety scores, search results and transit are all "
+                            + "specific to the city. Switching clears the "
+                            + "current route."
+                    )
+                }
+
+                Section {
                     Picker("Score journey for", selection: $settings.timeOfDay) {
                         ForEach(TimeOfDay.allCases) { option in
                             Label(option.label, systemImage: option.symbolName)
@@ -498,6 +533,7 @@ struct SettingsView: View {
 
                 if let meta {
                     Section("Loaded data") {
+                        row("City", meta.cityName ?? meta.city ?? "—")
                         row("Street segments", meta.segments.formatted())
                         row("Streetlights", meta.streetlights.formatted())
                         row(

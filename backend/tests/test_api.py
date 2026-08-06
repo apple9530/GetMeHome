@@ -365,3 +365,84 @@ def test_a_nominatim_house_number_row_gets_a_readable_name():
     assert _nominatim_name({"name": "Madam's Organ"}, "Madam's Organ, 18th St") == (
         "Madam's Organ"
     )
+
+
+# ---------------------------------------------------------------------------
+# Cities
+# ---------------------------------------------------------------------------
+
+
+def test_the_city_list_includes_unbuilt_cities(client):
+    """A configured-but-unbuilt city is a deployment state worth showing.
+
+    Hiding it would make a missing build look like a city the app has never
+    heard of, which sends someone looking in the wrong place.
+    """
+    body = client.get("/cities").json()
+    slugs = {c["slug"] for c in body["cities"]}
+    assert slugs == {"dc", "nyc"}
+    assert body["defaultCity"] == "dc"
+
+    by_slug = {c["slug"]: c for c in body["cities"]}
+    # NYC has no build in the test environment.
+    assert by_slug["nyc"]["available"] is False
+    assert by_slug["nyc"]["name"] == "New York"
+    assert by_slug["dc"]["bbox"] == [38.78, -77.14, 39.01, -76.89]
+
+
+def test_an_unknown_city_is_rejected_rather_than_substituted(client):
+    """Serving another city's graph would produce confident nonsense."""
+    response = client.get("/meta", params={"city": "boston"})
+    assert response.status_code == 404
+    assert "boston" in response.json()["detail"]
+
+
+def test_a_configured_but_unbuilt_city_says_how_to_build_it(client):
+    response = client.get("/meta", params={"city": "nyc"})
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "New York" in detail
+    assert "--city nyc" in detail
+
+
+def test_meta_names_the_city_it_answered_for(client):
+    body = client.get("/meta", params={"city": "dc"}).json()
+    assert body["city"] == "dc"
+    assert body["cityName"] == "Washington"
+
+
+def test_a_route_echoes_the_city_it_used(client):
+    body = client.post("/route", json=_route_body()).json()
+    assert body["city"] == "dc"
+
+
+def test_a_point_in_another_city_says_so(client):
+    """The commonest cause of an unsnappable point is the wrong city.
+
+    "No walkable street near there" is a poor way to say "you are looking at
+    the wrong map", and it sends people to check their GPS instead.
+    """
+    body = _route_body()
+    # Times Square.
+    body["origin"] = {"lat": 40.7580, "lon": -73.9855}
+    response = client.post("/route", json=body)
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "New York" in detail
+    assert "Washington" in detail
+
+
+def test_a_point_in_no_known_city_says_that_instead(client):
+    body = _route_body()
+    body["origin"] = {"lat": 51.5074, "lon": -0.1278}  # London
+    response = client.post("/route", json=body)
+
+    assert response.status_code == 422
+    assert "outside the Washington map" in response.json()["detail"]
+
+
+def test_health_reports_which_cities_are_built(client):
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["city"] == "dc"

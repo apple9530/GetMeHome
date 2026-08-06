@@ -35,6 +35,12 @@ enum RoutingError: LocalizedError {
 actor RoutingClient {
     private let session: URLSession
     private var baseURL: URL
+    /// Which city's data every request applies to.
+    ///
+    /// Held here rather than passed at each call site, because forgetting it
+    /// on one endpoint would mean a map drawn from one city and routes scored
+    /// against another — with no error to notice.
+    private var city: String?
 
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -68,6 +74,15 @@ actor RoutingClient {
         baseURL = url
     }
 
+    func updateCity(_ slug: String?) {
+        city = slug
+    }
+
+    func cities() async throws -> CitiesResponse {
+        // Deliberately not city-scoped: this is the call that discovers them.
+        try await get("/cities", query: [], includeCity: false)
+    }
+
     // MARK: - Routing
 
     func route(
@@ -88,7 +103,8 @@ actor RoutingClient {
             modes: modes,
             avoidCameras: avoidCameras,
             forceNight: forceNight,
-            crimeWindowDays: crimeWindowDays
+            crimeWindowDays: crimeWindowDays,
+            city: city
         )
         return try await post("/route", body: body)
     }
@@ -259,8 +275,14 @@ actor RoutingClient {
         return url
     }
 
-    private func get<T: Decodable>(_ path: String, query: [URLQueryItem]) async throws -> T {
-        try await perform(URLRequest(url: try makeURL(path, query: query)))
+    private func get<T: Decodable>(
+        _ path: String, query: [URLQueryItem], includeCity: Bool = true
+    ) async throws -> T {
+        var items = query
+        if includeCity, let city {
+            items.append(URLQueryItem(name: "city", value: city))
+        }
+        return try await perform(URLRequest(url: try makeURL(path, query: items)))
     }
 
     private func post<Body: Encodable, T: Decodable>(_ path: String, body: Body) async throws -> T {

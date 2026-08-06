@@ -111,6 +111,23 @@ final class AppSettings {
         didSet { defaults.set(serverURLString, forKey: Keys.server) }
     }
 
+    /// Which city the app is routing in, or nil until one has been chosen.
+    ///
+    /// Nil is a real state rather than a default: everything the app shows is
+    /// specific to a city, and guessing one would mean opening on a map of
+    /// somewhere the user is not. The picker on first launch is the price of
+    /// not guessing.
+    var citySlug: String? {
+        didSet { defaults.set(citySlug, forKey: Keys.city) }
+    }
+
+    /// Cached so the map can be framed and labelled before `/cities` answers.
+    var cityName: String {
+        didSet { defaults.set(cityName, forKey: Keys.cityName) }
+    }
+
+    var hasChosenCity: Bool { citySlug != nil }
+
     var avoidCameras: Bool {
         didSet { defaults.set(avoidCameras, forKey: Keys.avoidCameras) }
     }
@@ -173,6 +190,8 @@ final class AppSettings {
         static let voice = "voiceGuidance"
         static let timeOfDay = "timeOfDay"
         static let crimeWindow = "crimeWindowDays"
+        static let city = "citySlug"
+        static let cityName = "cityName"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -192,5 +211,13 @@ final class AppSettings {
         crimeWindow = CrimeWindow(
             rawValue: defaults.integer(forKey: Keys.crimeWindow)
         ) ?? .year
+        citySlug = defaults.string(forKey: Keys.city)
+        cityName = defaults.string(forKey: Keys.cityName) ?? ""
+    }
+
+    /// Adopt a city, remembering enough to render before the server answers.
+    func select(_ city: CityInfo) {
+        citySlug = city.slug
+        cityName = city.name
     }
 }
