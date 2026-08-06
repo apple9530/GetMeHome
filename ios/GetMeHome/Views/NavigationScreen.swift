@@ -1,6 +1,7 @@
 import CoreLocation
 import MapKit
 import SwiftUI
+import UIKit
 
 /// Active turn-by-turn guidance.
 struct NavigationScreen: View {
@@ -14,6 +15,8 @@ struct NavigationScreen: View {
     @State private var cameraPosition: MapCameraPosition = .userLocation(
         followsHeading: true, fallback: .automatic
     )
+    @State private var shareSheetURL: SharePayload?
+    @State private var confirmStopSharing = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -30,6 +33,17 @@ struct NavigationScreen: View {
                 }
                 if let error = model.lastError {
                     statusBanner(error, systemImage: "wifi.exclamationmark", tint: .orange)
+                }
+                if model.share.state.isActive {
+                    sharingBanner
+                }
+                if case let .failed(reason) = model.share.state {
+                    statusBanner(
+                        "Couldn't start sharing. \(reason)",
+                        systemImage: "exclamationmark.triangle",
+                        tint: .orange
+                    )
+                    .onTapGesture { model.share.dismissError() }
                 }
                 Spacer()
                 bottomBar
@@ -51,6 +65,21 @@ struct NavigationScreen: View {
         .onChange(of: settings.voiceGuidance) { _, newValue in
             speech.isEnabled = newValue
             if !newValue { speech.stop() }
+        }
+        .sheet(item: $shareSheetURL) { payload in
+            ActivityView(items: [payload.text])
+        }
+        .confirmationDialog(
+            "Stop sharing your ETA?",
+            isPresented: $confirmStopSharing,
+            titleVisibility: .visible
+        ) {
+            Button("Stop sharing", role: .destructive) {
+                Task { await model.stopSharing() }
+            }
+            Button("Keep sharing", role: .cancel) {}
+        } message: {
+            Text("The link will stop working straight away.")
         }
         .sheet(isPresented: .constant(model.hasArrived)) {
             ArrivalSheet(itinerary: model.itinerary, onDone: onEnd)
@@ -145,6 +174,75 @@ struct NavigationScreen: View {
             .padding(.top, 6)
     }
 
+    // MARK: - Sharing
+
+    /// Share, then stop sharing. Deliberately the same button position both
+    /// ways, so the way out is exactly where the way in was.
+    private var shareButton: some View {
+        Button {
+            if let url = model.share.state.url {
+                shareSheetURL = SharePayload(text: url)
+            } else if case .starting = model.share.state {
+                // Already in flight; a second tap would create a second share.
+            } else {
+                Task { await model.startSharing() }
+            }
+        } label: {
+            Group {
+                if case .starting = model.share.state {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: model.share.state.isActive
+                        ? "person.2.wave.2.fill" : "square.and.arrow.up")
+                        .font(.body)
+                }
+            }
+            .frame(width: 42, height: 42)
+            .background(
+                model.share.state.isActive
+                    ? Color.accentColor.opacity(0.22)
+                    : Color(.tertiarySystemFill),
+                in: Circle()
+            )
+        }
+        .accessibilityLabel(
+            model.share.state.isActive ? "Share the link again" : "Share ETA"
+        )
+    }
+
+    /// Always visible while sharing.
+    ///
+    /// Someone broadcasting their live location should never have to remember
+    /// that they are — the state has to be on screen, and stopping has to be
+    /// one tap from wherever they are looking.
+    private var sharingBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.caption)
+                .foregroundStyle(model.share.lastPushFailed ? .orange : .green)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Sharing your ETA")
+                    .font(.caption.weight(.medium))
+                Text(
+                    model.share.lastPushFailed
+                        ? "Can't reach the server — they may see an old position."
+                        : "Stops automatically when you arrive."
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Stop") { confirmStopSharing = true }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+    }
+
     // MARK: - Bottom bar
 
     private var bottomBar: some View {
@@ -187,6 +285,8 @@ struct NavigationScreen: View {
                     .background(Color(.tertiarySystemFill), in: Circle())
                 }
                 .accessibilityLabel(settings.voiceGuidance ? "Mute guidance" : "Unmute guidance")
+
+                shareButton
 
                 Button(role: .destructive) {
                     onEnd()
@@ -250,4 +350,25 @@ private extension String {
         guard let first else { return self }
         return first.lowercased() + dropFirst()
     }
+}
+
+/// UIKit's share sheet.
+///
+/// `ShareLink` would be simpler, but it needs the URL to exist when the view
+/// is built and here it does not exist until the share has been created on the
+/// server. Presenting the system sheet on demand is the honest shape for that.
+struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+/// A shareable string, wrapped so it can drive an `item:` sheet.
+struct SharePayload: Identifiable {
+    let text: String
+    var id: String { text }
 }

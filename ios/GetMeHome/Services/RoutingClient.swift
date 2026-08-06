@@ -112,6 +112,43 @@ actor RoutingClient {
         return try await get("/crime/grid", query: items)
     }
 
+    // MARK: - Live ETA sharing
+
+    func startShare(destinationName: String) async throws -> ShareCreated {
+        try await post(
+            "/share", body: ShareCreateRequest(destinationName: destinationName)
+        )
+    }
+
+    func updateShare(
+        token: String,
+        ownerKey: String,
+        coordinate: CLLocationCoordinate2D,
+        etaSeconds: Double?,
+        remainingMetres: Double?
+    ) async throws -> ShareStatus {
+        try await post(
+            "/share/\(token)/update",
+            body: ShareUpdateRequest(
+                ownerKey: ownerKey,
+                lat: coordinate.latitude,
+                lon: coordinate.longitude,
+                etaSeconds: etaSeconds,
+                remainingMetres: remainingMetres
+            )
+        )
+    }
+
+    @discardableResult
+    func endShare(
+        token: String, ownerKey: String, arrived: Bool
+    ) async throws -> ShareStatus {
+        try await post(
+            "/share/\(token)/end",
+            body: ShareFinishRequest(ownerKey: ownerKey, arrived: arrived)
+        )
+    }
+
     // MARK: - Transit
 
     func transitStops(

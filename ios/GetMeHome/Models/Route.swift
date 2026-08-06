@@ -437,3 +437,46 @@ struct TripDetail: Codable {
             : "\(-minutes) min early"
     }
 }
+
+// MARK: - Live ETA sharing
+
+struct ShareCreateRequest: Codable {
+    let destinationName: String
+}
+
+struct ShareCreated: Codable {
+    let token: String
+    /// The link to hand to a friend. Watching only.
+    let url: String
+    /// This device's write credential. Never put it in the shared link.
+    let ownerKey: String
+    let expiresInSeconds: Double
+}
+
+struct ShareUpdateRequest: Codable {
+    let ownerKey: String
+    let lat: Double
+    let lon: Double
+    let etaSeconds: Double?
+    let remainingMetres: Double?
+}
+
+struct ShareFinishRequest: Codable {
+    let ownerKey: String
+    let arrived: Bool
+}
+
+struct ShareStatus: Codable {
+    /// active | arrived | stale | ended
+    let status: String
+    let destinationName: String
+    let lat: Double?
+    let lon: Double?
+    let etaSeconds: Double?
+    let remainingMetres: Double?
+    let updatedAgoSeconds: Double
+    let expiresInSeconds: Double
+    let pollAfterSeconds: Int
+
+    var isActive: Bool { status == "active" }
+}

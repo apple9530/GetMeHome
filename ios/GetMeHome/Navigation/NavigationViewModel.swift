@@ -66,14 +66,21 @@ final class NavigationViewModel {
 
     private let speech: SpeechService
     private let client: RoutingClient
+    /// Live ETA sharing. Owned here rather than by the view so it survives a
+    /// redraw and, more importantly, so arrival can end it — the guarantee the
+    /// whole feature rests on is that a share cannot outlive the walk.
+    let share: ShareETAService
     private let destination: CLLocationCoordinate2D
-    private let destinationName: String
+    let destinationName: String
     private let modes: [String]
     private let avoidCameras: Bool
 
     /// Nil until the first fix, and reset on reroute, so those searches scan
     /// the whole route instead of a window around a position on the old one.
     private var lastDistanceAlong: Double?
+    /// The most recent accepted fix, so a share that starts mid-walk has a
+    /// position to send immediately rather than waiting for the next update.
+    private var lastCoordinate: CLLocationCoordinate2D?
     private var spokenTriggers: Set<String> = []
     private var lastRerouteAt: Date = .distantPast
     private var rerouteTask: Task<Void, Never>?
@@ -94,6 +101,7 @@ final class NavigationViewModel {
         self.avoidCameras = avoidCameras
         self.speech = speech
         self.client = client
+        self.share = ShareETAService(client: client)
         self.tracker = RouteTracker(
             coordinates: itinerary.allCoordinates,
             steps: itinerary.walkingSteps,
@@ -118,6 +126,13 @@ final class NavigationViewModel {
         rerouteTask?.cancel()
         rerouteTask = nil
         speech.stop()
+        // Backing out of navigation ends the share too. Leaving it running
+        // because the user closed the screen rather than arriving is exactly
+        // the case this must not get wrong.
+        if share.state.isActive {
+            let hasArrived = self.hasArrived
+            Task { await share.stop(arrived: hasArrived) }
+        }
     }
 
     // MARK: - Location updates
@@ -134,13 +149,53 @@ final class NavigationViewModel {
             for: location.coordinate, previousDistance: lastDistanceAlong
         )
         lastDistanceAlong = fix.distanceAlong
+        lastCoordinate = location.coordinate
         progress = fix
 
         checkArrival(at: location)
+
+        if share.state.isActive {
+            let coordinate = location.coordinate
+            let eta = remainingDuration
+            let remaining = remainingDistance
+            let arrived = hasArrived
+            Task { [share] in
+                if arrived {
+                    await share.stop(arrived: true)
+                } else {
+                    await share.push(
+                        coordinate: coordinate,
+                        etaSeconds: eta,
+                        remainingMetres: remaining
+                    )
+                }
+            }
+        }
+
         guard !hasArrived else { return }
 
         speakIfNeeded(for: fix)
         checkOffRoute(fix, from: location)
+    }
+
+    // MARK: - Sharing
+
+    func startSharing() async {
+        await share.start(destinationName: destinationName)
+        // Push immediately rather than waiting out the interval: a link that
+        // opens on "waiting for a position" looks broken.
+        if let lastCoordinate {
+            await share.push(
+                coordinate: lastCoordinate,
+                etaSeconds: remainingDuration,
+                remainingMetres: remainingDistance,
+                force: true
+            )
+        }
+    }
+
+    func stopSharing() async {
+        await share.stop(arrived: false)
     }
 
     private func checkArrival(at location: CLLocation) {

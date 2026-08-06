@@ -329,6 +329,9 @@ provisioning profile expires every 7 days and you will need to re-install.
 | `GET /transit/stop/{id}/board` | The next departures from a stop, with live predictions folded in. |
 | `GET /transit/trip/{pattern}/{trip}` | A vehicle's whole journey: every call, its time, and where it is now. |
 | `GET /geocode` · `GET /reverse` | Fuzzy place search over the local OSM index, topped up by Nominatim. |
+| `POST /share` | Begin sharing a walk. Returns a watch-only link and the walker's write key. |
+| `POST /share/{token}/update` · `/end` | Move the dot, or end the share. Needs the write key. |
+| `GET /share/{token}` · `GET /s/{token}` | What a recipient sees, as JSON and as a page. |
 | `GET /meta` · `GET /health` | Build provenance and liveness. |
 
 Interactive docs at `http://localhost:8000/docs` once running.
@@ -410,6 +413,53 @@ of this existed. It must never turn a working timetable into an error page.
 
 > Set `WMATA_API_KEY` to enable live data. Without it the boards still work
 > from the timetable and say so.
+
+---
+
+## Sharing a walk
+
+Starting a walk offers to share a live link. Whoever holds it sees where the
+walker is and when they expect to arrive, and sees it stop without having to
+ask. This is the only part of the system that handles a live human location,
+so it is built around what must *not* happen rather than around convenience.
+
+**A share must never outlive the walk.** Someone shares because they are
+worried, and a link still broadcasting an hour after they got home is worse
+than not offering the feature. It ends four ways, and only one depends on
+anybody remembering:
+
+- **arrival**, automatically — the normal case
+- **ending navigation**, including by backing out of the screen
+- **a hard ceiling** of four hours on the server, whatever the app does
+- **silence** — if the phone stops reporting for twelve minutes the share goes
+  stale and is then dropped, which covers a dead battery or a killed app
+
+**Reading and writing are separate.** Creating a share returns two secrets: a
+token, which goes in the link, and an owner key, which does not. The link
+watches and nothing more — it cannot move the dot, extend the share or end it.
+The owner key stays in memory on the walker's device and is never persisted.
+
+**Only the current position is held, never a track.** A recipient can see where
+someone is; nothing anywhere can say where they have been. When a share ends
+the position is dropped immediately, and only the *fact* of arriving survives —
+for fifteen minutes, so a friend who looks a moment later sees "arrived" rather
+than a dead link.
+
+**The recipient page makes no external requests.** Not even map tiles, and that
+is a decision rather than an omission: embedding a tile provider would hand a
+third party the live position of someone who never agreed to that. The page
+states the position in words and offers to open it in the recipient's own maps
+app, which is their choice to make. It is `no-store`, `noindex` and
+`no-referrer`, and it says out loud that anyone with the link can see it.
+
+A bad token and a bad key return the same 404, and the page is served for any
+token at all — distinguishing them would let someone probing tokens tell a live
+share from a dead one.
+
+> **Deployment note.** Shares live in process memory. They do not survive a
+> restart, and with more than one worker a share created on one is invisible to
+> the others. Fine for a single-process deployment, wrong for anything larger,
+> where this wants Redis with the same expiry semantics.
 
 ---
 

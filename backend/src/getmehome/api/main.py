@@ -7,8 +7,9 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from ..config import DC_BBOX, DC_TIMEZONE, GEOCODER_URL, GEOCODER_USER_AGENT
 from ..daylight import is_night as compute_is_night
@@ -18,6 +19,7 @@ from ..places import parse_address, street_match
 from ..routing.multimodal import Itinerary, plan
 from ..safety.cameras import cameras_in_bbox
 from ..safety.hexgrid import hex_vertices
+from ..sharing import MIN_POLL_INTERVAL_S, get_store, view_of
 from ..transit_board import (
     RAIL_MODES,
     attach_live,
@@ -41,6 +43,11 @@ from .schemas import (
     OffenseCount,
     RouteRequest,
     RouteResponse,
+    ShareCreatedResponse,
+    ShareCreateRequest,
+    ShareFinishRequest,
+    ShareStatusResponse,
+    ShareUpdateRequest,
     StepModel,
     StopBoardResponse,
     TransitStopModel,
@@ -901,3 +908,112 @@ def _same_line(prediction, detail) -> bool:
     if not line or not route:
         return True
     return line[:2] == route[:2] or route.startswith(line) or line.startswith(route[:2])
+
+
+# --------------------------------------------------------------------------
+# Live ETA sharing
+#
+# The one part of this service that handles a live human location, so the
+# rules are worth stating where they are enforced rather than only in the
+# module that implements them:
+#
+#   * The link is the credential. Nothing else identifies a recipient, so the
+#     token is 128 bits of randomness and the page says who can see it.
+#   * Reading and writing are separate. Creating a share returns an owner key
+#     that never appears in the shared link; without it the link watches and
+#     nothing more.
+#   * Nothing is persisted, and only the current position is held — a
+#     recipient sees where someone is, never where they have been.
+#   * It ends on arrival, on a hard ceiling, and on silence, because the case
+#     that matters is the walker who forgets to stop it.
+# --------------------------------------------------------------------------
+
+
+def _share_url(request: Request, token: str) -> str:
+    """The link to hand to a friend, on whatever host served this request."""
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/s/{token}"
+
+
+@app.post("/share", response_model=ShareCreatedResponse)
+def share_create(body: ShareCreateRequest, request: Request) -> ShareCreatedResponse:
+    """Begin sharing a walk. Returns the watch link and the write key."""
+    session = get_store().create(body.destinationName)
+    return ShareCreatedResponse(
+        token=session.token,
+        url=_share_url(request, session.token),
+        ownerKey=session.owner_key,
+        expiresInSeconds=session.expires_at - session.created_at,
+    )
+
+
+@app.post("/share/{token}/update", response_model=ShareStatusResponse)
+def share_update(token: str, body: ShareUpdateRequest) -> ShareStatusResponse:
+    """Move the dot. Requires the owner key issued at creation."""
+    session = get_store().update(
+        token,
+        body.ownerKey,
+        lat=body.lat,
+        lon=body.lon,
+        eta_s=body.etaSeconds,
+        remaining_m=body.remainingMetres,
+    )
+    if session is None:
+        # One message for a bad token and a bad key alike: distinguishing them
+        # would confirm that a guessed token exists.
+        raise HTTPException(status_code=404, detail="No such share.")
+    return _share_status(session)
+
+
+@app.post("/share/{token}/end", response_model=ShareStatusResponse)
+def share_end(token: str, body: ShareFinishRequest) -> ShareStatusResponse:
+    """End a share, on arrival or because the walker stopped it."""
+    session = get_store().finish(token, body.ownerKey, arrived=body.arrived)
+    if session is None:
+        raise HTTPException(status_code=404, detail="No such share.")
+    return _share_status(session)
+
+
+@app.get("/share/{token}", response_model=ShareStatusResponse)
+def share_status(token: str) -> ShareStatusResponse:
+    """What the recipient is allowed to see."""
+    session = get_store().get(token)
+    if session is None:
+        raise HTTPException(status_code=404, detail="This link has expired.")
+    return _share_status(session)
+
+
+@app.get("/s/{token}", response_class=HTMLResponse)
+def share_page(token: str) -> HTMLResponse:
+    """The page a recipient opens.
+
+    Served even for an unknown token, and the page reports the expiry itself.
+    Returning 404 here would let anyone probing tokens tell a live share from
+    a dead one by the status code alone.
+    """
+    from ..sharing import recipient_page  # noqa: PLC0415 — page template only
+
+    return HTMLResponse(
+        recipient_page(token),
+        headers={
+            # A live location has no business in a cache or a search index.
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            "X-Robots-Tag": "noindex, nofollow",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
+def _share_status(session) -> ShareStatusResponse:
+    view = view_of(session)
+    return ShareStatusResponse(
+        status=view.status,
+        destinationName=view.destination_name,
+        lat=view.lat,
+        lon=view.lon,
+        etaSeconds=view.eta_s,
+        remainingMetres=view.remaining_m,
+        updatedAgoSeconds=round(view.updated_ago_s, 1),
+        expiresInSeconds=round(view.expires_in_s, 1),
+        pollAfterSeconds=max(MIN_POLL_INTERVAL_S, 10),
+    )

@@ -282,3 +282,50 @@ class TripDetailResponse(BaseModel):
     deviationSeconds: float = 0.0
     vehicle: VehiclePosition | None = None
     liveNote: str = ""
+
+
+# --------------------------------------------------------------------------
+# Live ETA sharing
+# --------------------------------------------------------------------------
+
+
+class ShareCreateRequest(BaseModel):
+    destinationName: str = Field("their destination", max_length=120)
+
+
+class ShareCreatedResponse(BaseModel):
+    token: str
+    # The link to hand to a friend. Watching only — it cannot move the dot.
+    url: str
+    # The walker's write credential. Returned once, never in the shared link,
+    # and never echoed back by any read endpoint.
+    ownerKey: str
+    expiresInSeconds: float
+
+
+class ShareUpdateRequest(BaseModel):
+    ownerKey: str
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    etaSeconds: float | None = Field(None, ge=0)
+    remainingMetres: float | None = Field(None, ge=0)
+
+
+class ShareFinishRequest(BaseModel):
+    ownerKey: str
+    # True when the walk completed; false when the walker stopped sharing.
+    arrived: bool = False
+
+
+class ShareStatusResponse(BaseModel):
+    """What a recipient sees. Deliberately carries no owner key."""
+
+    status: str  # active | arrived | stale | ended
+    destinationName: str
+    lat: float | None = None
+    lon: float | None = None
+    etaSeconds: float | None = None
+    remainingMetres: float | None = None
+    updatedAgoSeconds: float = 0
+    expiresInSeconds: float = 0
+    pollAfterSeconds: int = 10
