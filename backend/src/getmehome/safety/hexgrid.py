@@ -239,6 +239,20 @@ class CrimeIndex:
     def count(self) -> int:
         return len(self.lat)
 
+    @property
+    def latest(self) -> datetime | None:
+        """The most recent incident held, regardless of viewport or window.
+
+        Reported to the client so an empty grid can say *why* it is empty. The
+        two cities' feeds are published on completely different cadences —
+        Washington's MPD updates daily, New York's NYPD in quarterly batches —
+        so a 30-day lookback can legitimately match nothing in one city and
+        thousands in the other. Without this, that reads as a broken overlay.
+        """
+        if self.count == 0:
+            return None
+        return datetime.fromtimestamp(float(self.timestamps.max()), tz=UTC)
+
     @classmethod
     def from_incidents(
         cls,
@@ -335,6 +349,14 @@ class CrimeIndex:
             & (self.lon >= min_lon - pad_lon)
             & (self.lon <= max_lon + pad_lon)
         )
+        # Incidents the premises policy zeroed out — the ones inside private
+        # dwellings — are dropped rather than counted at weight zero. Keeping
+        # them produced cells that read "24 incidents" and drew at zero
+        # intensity, i.e. invisible hexagons with a number attached, and in a
+        # residential viewport the whole grid could vanish that way while the
+        # response still claimed hundreds of incidents. The map and the counts
+        # now describe the same thing: street crime.
+        mask &= self.weight > 0.0
         if night_only:
             mask &= self.is_night
         if window_days is not None:

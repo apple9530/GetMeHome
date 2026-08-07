@@ -461,3 +461,107 @@ def test_grouped_shares_still_sum_to_one():
     )
     total = sum(e.share for e in cells[0].by_offense)
     assert total == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# What the grid leaves out, and what it says about itself
+# ---------------------------------------------------------------------------
+
+
+def _nyc_index(incidents, premises_policy):
+    from getmehome.cities import NYC
+
+    return CrimeIndex.from_incidents(
+        incidents,
+        now=NOW,
+        projection=DC.projection,
+        vocabulary=NYC.crime_vocabulary,
+        city_slug="nyc",
+        premises=premises_policy,
+    )
+
+
+def test_indoor_incidents_are_left_out_of_the_grid_entirely():
+    """Not counted at weight zero — dropped.
+
+    Counting them produced a cell that said "12 incidents" and drew at zero
+    intensity: an invisible hexagon with a number attached. Over a residential
+    viewport the whole overlay could vanish that way while the response still
+    claimed hundreds of incidents, which is exactly the shape of "the crime
+    graph isn't showing".
+    """
+    from getmehome.cities import STREET_ONLY
+
+    indoors = [
+        CrimeIncident(
+            lat=CENTER_LAT, lon=CENTER_LON, offense="FELONY ASSAULT", method="",
+            shift="MIDNIGHT", reported_at=NOW, premises="RESIDENCE - APT. HOUSE",
+        )
+        for _ in range(12)
+    ]
+    cells, _ = _nyc_index(indoors, STREET_ONLY).cells(
+        CENTER_LAT - 0.01, CENTER_LON - 0.01, CENTER_LAT + 0.01, CENTER_LON + 0.01
+    )
+    assert cells == []
+
+    outdoors = indoors + [
+        CrimeIncident(
+            lat=CENTER_LAT, lon=CENTER_LON, offense="ROBBERY", method="",
+            shift="MIDNIGHT", reported_at=NOW, premises="STREET",
+        )
+    ]
+    cells, _ = _nyc_index(outdoors, STREET_ONLY).cells(
+        CENTER_LAT - 0.01, CENTER_LON - 0.01, CENTER_LAT + 0.01, CENTER_LON + 0.01
+    )
+    # The count now describes street crime, which is what the surface models.
+    assert [c.total for c in cells] == [1]
+
+
+def test_a_city_with_no_premises_column_keeps_everything():
+    """The filter must not quietly apply to Washington, which publishes none."""
+    from getmehome.cities import NO_PREMISES
+
+    incidents = incidents_at(CENTER_LAT, CENTER_LON, 8)
+    cells, _ = _nyc_index(incidents, NO_PREMISES).cells(
+        CENTER_LAT - 0.01, CENTER_LON - 0.01, CENTER_LAT + 0.01, CENTER_LON + 0.01
+    )
+    assert sum(c.total for c in cells) == 8
+
+
+def test_the_index_reports_its_newest_incident():
+    """How an empty grid explains itself.
+
+    New York publishes in quarterly batches, so a 30-day lookback there can
+    legitimately match nothing while Washington's daily feed matches plenty.
+    Without a date to point at, that is indistinguishable from a bug.
+    """
+    index = dc_crime_index(
+        incidents_at(CENTER_LAT, CENTER_LON, 5)
+        + incidents_at(CENTER_LAT, CENTER_LON, 1, offense="HOMICIDE")
+    )
+    assert index.latest is not None
+    assert index.latest <= NOW
+
+    empty = dc_crime_index([])
+    assert empty.latest is None
+
+
+def test_a_stale_feed_returns_no_cells_for_a_short_window():
+    """The mechanism behind the empty New York grid, stated directly."""
+    old = [
+        CrimeIncident(
+            lat=CENTER_LAT, lon=CENTER_LON, offense="ROBBERY", method="",
+            shift="MIDNIGHT", reported_at=NOW - timedelta(days=120),
+        )
+        for _ in range(20)
+    ]
+    index = dc_crime_index(old)
+    box = (CENTER_LAT - 0.01, CENTER_LON - 0.01, CENTER_LAT + 0.01, CENTER_LON + 0.01)
+
+    recent, _ = index.cells(*box, window_days=30, now=NOW)
+    assert recent == []
+
+    # And the same data over a window that reaches them is fine, so the empty
+    # result above is about recency and nothing else.
+    year, _ = index.cells(*box, window_days=365, now=NOW)
+    assert sum(c.total for c in year) == 20

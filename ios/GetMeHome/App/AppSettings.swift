@@ -126,6 +126,16 @@ final class AppSettings {
         didSet { defaults.set(cityName, forKey: Keys.cityName) }
     }
 
+    /// The chosen city's bounds, `[minLat, minLon, maxLat, maxLon]`.
+    ///
+    /// Cached alongside the name so the app can tell whether a *stored* place
+    /// belongs to this city without waiting for `/cities` to answer — which
+    /// matters because the saved-places list is the first thing shown when a
+    /// search field is tapped, well before any request completes.
+    var cityBBox: [Double] {
+        didSet { defaults.set(cityBBox, forKey: Keys.cityBBox) }
+    }
+
     var hasChosenCity: Bool { citySlug != nil }
 
     var avoidCameras: Bool {
@@ -192,6 +202,7 @@ final class AppSettings {
         static let crimeWindow = "crimeWindowDays"
         static let city = "citySlug"
         static let cityName = "cityName"
+        static let cityBBox = "cityBBox"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -213,11 +224,29 @@ final class AppSettings {
         ) ?? .year
         citySlug = defaults.string(forKey: Keys.city)
         cityName = defaults.string(forKey: Keys.cityName) ?? ""
+        cityBBox = defaults.array(forKey: Keys.cityBBox) as? [Double] ?? []
     }
 
     /// Adopt a city, remembering enough to render before the server answers.
+    ///
+    /// The slug is set *last* on purpose. Observers react to it — the saved
+    /// places store switches lists, the offline pack is reloaded — and every
+    /// one of them reads the name and bounds while doing so. Writing it first
+    /// would mean each observer could see the new city under the old city's
+    /// bounds, depending on when the update cycle happened to run.
     func select(_ city: CityInfo) {
-        citySlug = city.slug
         cityName = city.name
+        cityBBox = city.bbox
+        citySlug = city.slug
+    }
+
+    /// Fill in bounds for a city already chosen before they were cached.
+    ///
+    /// Only relevant on the first launch after upgrading, where the stored
+    /// slug predates this field. Without it the position filter on saved
+    /// places stays disabled until the user reopens the city picker.
+    func backfillBounds(from city: CityInfo) {
+        guard city.slug == citySlug, cityBBox.count != 4 else { return }
+        cityBBox = city.bbox
     }
 }

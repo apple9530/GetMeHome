@@ -1,4 +1,4 @@
-.PHONY: help install test lint graph graph-refresh gtfs serve docker clean \
+.PHONY: help install test lint graph graph-refresh gtfs probe serve docker clean \
         data-manifest deploy-data deploy-fly
 
 PY ?= python3
@@ -18,6 +18,8 @@ help:
 	@echo "  make graph         build the routing graph for CITY (default: dc)"
 	@echo "  make graph-all     build every known city in turn"
 	@echo "  make graph-refresh rebuild, re-downloading streetlights and crime"
+	@echo ""
+	@echo "  make probe         show what CITY's data feeds actually publish"
 	@echo ""
 	@echo "  Set CITY=nyc on any of the above. e.g. make graph CITY=nyc"
 	@echo "  make serve         run the API on :8000"
@@ -41,6 +43,13 @@ lint:
 # no key for this step.
 gtfs:
 	$(PY) -m getmehome.ingest.fetch_gtfs --city $(CITY)
+
+# What each feed publishes, and which column the ingester reads for every
+# field it needs. Run this first when a city builds but its data looks wrong:
+# a renamed column produces no error, just an empty result that looks like the
+# city genuinely has no streetlights or no recent crime.
+probe:
+	$(PY) -m getmehome.ingest.probe --city $(CITY)
 
 graph:
 	$(PY) -m getmehome.graph.build --city $(CITY)

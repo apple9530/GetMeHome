@@ -517,3 +517,84 @@ def test_nypd_premises_column_is_named_correctly():
     from getmehome.ingest.socrata import _NYPD_PREMISES
 
     assert "prem_typ_desc" in _NYPD_PREMISES
+
+
+# ---------------------------------------------------------------------------
+# Reading coordinates out of a Socrata row
+#
+# The failure this guards against has no symptom. A dataset whose coordinate
+# lives somewhere the ingester does not look yields zero rows, the build
+# succeeds, and the night score silently stops distinguishing a lit street
+# from an unlit one — because every segment ties at zero and there is nothing
+# left to rank.
+# ---------------------------------------------------------------------------
+
+
+def test_named_columns_are_preferred():
+    from getmehome.ingest.socrata import coordinates_of
+
+    row = {"latitude": "40.7128", "longitude": "-73.9560"}
+    assert coordinates_of(row, ("latitude",), ("longitude",)) == (40.7128, -73.9560)
+
+
+def test_geojson_geometry_is_read_lon_then_lat():
+    """GeoJSON orders coordinates lon, lat. Reversing them puts New York in
+    the Indian Ocean, where the bounding-box check rejects every row."""
+    from getmehome.ingest.socrata import coordinates_of
+
+    row = {"the_geom": {"type": "Point", "coordinates": [-73.9560, 40.7128]}}
+    lat, lon = coordinates_of(row, ("latitude",), ("longitude",))
+    assert (lat, lon) == (40.7128, -73.9560)
+    assert NYC.bbox.contains(lat, lon)
+
+
+def test_a_multipoint_geometry_is_unwrapped():
+    from getmehome.ingest.socrata import coordinates_of
+
+    row = {"the_geom": {"type": "MultiPoint", "coordinates": [[-73.9560, 40.7128]]}}
+    assert coordinates_of(row, ("latitude",), ("longitude",)) == (40.7128, -73.9560)
+
+
+def test_the_older_socrata_location_type_is_understood():
+    from getmehome.ingest.socrata import coordinates_of
+
+    row = {"location": {"latitude": "40.7128", "longitude": "-73.9560"}}
+    assert coordinates_of(row, ("latitude",), ("longitude",)) == (40.7128, -73.9560)
+
+
+def test_a_row_with_no_usable_coordinate_returns_nothing():
+    from getmehome.ingest.socrata import coordinates_of
+
+    for row in (
+        {"objectid": "1"},
+        {"latitude": "", "longitude": ""},
+        {"the_geom": {"type": "Point", "coordinates": []}},
+        {"the_geom": "POINT (-73.9 40.7)"},  # WKT, which is not parsed
+    ):
+        assert coordinates_of(row, ("latitude",), ("longitude",)) is None
+
+
+def test_projected_coordinates_are_not_mistaken_for_degrees():
+    """State-plane feet in `x_coord`/`y_coord` are a real NYC column pair.
+
+    They are read, because some datasets do publish degrees under those
+    names — but the city's bounding box is what decides, and a value in the
+    hundreds of thousands cannot pass it.
+    """
+    from getmehome.ingest.socrata import coordinates_of
+
+    row = {"x_coord": "986000", "y_coord": "212000"}
+    point = coordinates_of(row, ("y_coord",), ("x_coord",))
+    assert point is not None
+    assert not NYC.bbox.contains(*point)
+
+
+def test_a_build_with_no_streetlights_is_refused():
+    """Zero lamps does not fail anywhere on its own — it just makes the night
+    score crime-only, which is invisible unless you go looking."""
+    from getmehome.graph.build import _check_lights
+
+    with pytest.raises(RuntimeError, match="no usable lamps"):
+        _check_lights(NYC, [])
+
+    _check_lights(NYC, [object()])  # anything non-empty is fine here

@@ -35,6 +35,18 @@ final class PlaceStore {
     /// first thing anyone would see.
     private(set) var city: String?
 
+    /// The current city's bounds, `[minLat, minLon, maxLat, maxLon]`.
+    ///
+    /// A second, independent guard on top of the per-city storage key. The key
+    /// is the mechanism; this is the check that the mechanism worked. It
+    /// matters because the key alone trusts history: anything saved before
+    /// cities existed, or saved while no city had been chosen yet, landed in a
+    /// shared list, and a store that only keys by city will happily hand that
+    /// mixture back. Filtering on position cannot be fooled by any of that —
+    /// a Washington coordinate is not in New York no matter which file it was
+    /// read from.
+    private(set) var bounds: [Double] = []
+
     private var key: String {
         city.map { "savedPlaces.\($0)" } ?? "savedPlaces"
     }
@@ -42,9 +54,10 @@ final class PlaceStore {
     /// The pre-city key, migrated once into whichever city owned it.
     private static let legacyKey = "savedPlaces"
 
-    init(defaults: UserDefaults = .standard, city: String? = nil) {
+    init(defaults: UserDefaults = .standard, city: String? = nil, bounds: [Double] = []) {
         self.defaults = defaults
         self.city = city
+        self.bounds = bounds
         load()
     }
 
@@ -52,25 +65,55 @@ final class PlaceStore {
     ///
     /// The previous city's entries stay on disk under their own key, so
     /// switching back and forth does not lose anything.
-    func switchTo(city newCity: String?) {
-        guard newCity != city else { return }
+    func switchTo(city newCity: String?, bounds newBounds: [Double] = []) {
+        let cityChanged = newCity != city
+        let boundsChanged = newBounds != bounds
+        guard cityChanged || boundsChanged else { return }
+
         city = newCity
-        load()
+        bounds = newBounds
+
+        if cityChanged {
+            load()
+        } else {
+            // Bounds arriving for a city already loaded — the backfill on the
+            // first launch after upgrading. The legacy list could not be split
+            // without them, so that is retried now rather than left until the
+            // next city switch.
+            migrateLegacy()
+        }
+    }
+
+    /// Whether a saved place belongs to the city currently loaded.
+    ///
+    /// With no bounds known — the first launch after upgrading, before the
+    /// city picker has been reopened — everything passes. Hiding someone's
+    /// starred places because a cache entry is missing would be a worse
+    /// failure than showing one that is out of area.
+    private func inCurrentCity(_ place: GeocodeResult) -> Bool {
+        guard bounds.count == 4 else { return true }
+        return place.lat >= bounds[0] && place.lat <= bounds[2]
+            && place.lon >= bounds[1] && place.lon <= bounds[3]
     }
 
     /// Starred first, then most recently used. This is the order the picker
     /// shows, and it is the whole point of starring: the handful of places
     /// someone actually goes should never scroll away behind a week of
     /// one-off searches.
+    /// Everything saved that is actually in the current city. This, not
+    /// `saved`, is what the interface should count and show.
+    var visible: [SavedPlace] { saved.filter { inCurrentCity($0.place) } }
+
     var suggestions: [SavedPlace] {
-        let starred = saved.filter(\.isStarred).sorted {
+        let here = visible
+        let starred = here.filter(\.isStarred).sorted {
             $0.place.name.localizedCaseInsensitiveCompare($1.place.name) == .orderedAscending
         }
-        let recents = saved.filter { !$0.isStarred }.sorted { $0.lastUsed > $1.lastUsed }
+        let recents = here.filter { !$0.isStarred }.sorted { $0.lastUsed > $1.lastUsed }
         return starred + recents
     }
 
-    var starred: [SavedPlace] { saved.filter(\.isStarred) }
+    var starred: [SavedPlace] { visible.filter(\.isStarred) }
 
     func isStarred(_ place: GeocodeResult) -> Bool {
         entry(for: place)?.isStarred ?? false
@@ -146,14 +189,42 @@ final class PlaceStore {
 
     private func load() {
         saved = decode(forKey: key) ?? []
+        migrateLegacy()
+    }
 
-        // One-time migration. Everything saved before cities existed was
-        // Washington, so it moves under DC's key rather than being orphaned —
-        // losing someone's starred places to a refactor is not acceptable.
-        if saved.isEmpty, city == "dc", let legacy = decode(forKey: Self.legacyKey) {
-            saved = legacy
+    /// Fold the pre-city list into whichever city each of its entries is in.
+    ///
+    /// The first version of this assumed the legacy list was all Washington,
+    /// because cities did not exist when it was written to. That was only true
+    /// for someone who never used the app in the window where New York had
+    /// been added but the per-city keys had not — and for anyone who had, it
+    /// copied a mixed list wholesale under Washington's key, which is one of
+    /// the ways the two cities' addresses ended up interleaved.
+    ///
+    /// So it keeps only the entries that fall inside the city being loaded,
+    /// and leaves the legacy blob in place for the other cities to take their
+    /// own share when they are next opened. It is deleted once nothing is left
+    /// that any city would claim.
+    private func migrateLegacy() {
+        guard bounds.count == 4, city != nil,
+              let legacy = decode(forKey: Self.legacyKey), !legacy.isEmpty
+        else { return }
+
+        let mine = legacy.filter { inCurrentCity($0.place) }
+        let theirs = legacy.filter { !inCurrentCity($0.place) }
+
+        if !mine.isEmpty {
+            // Merged rather than assigned: this city may already have its own
+            // list, and the migration must not overwrite it.
+            let known = Set(saved.map(\.id))
+            saved.append(contentsOf: mine.filter { !known.contains($0.id) })
             persist()
+        }
+
+        if theirs.isEmpty {
             defaults.removeObject(forKey: Self.legacyKey)
+        } else if !mine.isEmpty, let data = try? JSONEncoder().encode(theirs) {
+            defaults.set(data, forKey: Self.legacyKey)
         }
     }
 

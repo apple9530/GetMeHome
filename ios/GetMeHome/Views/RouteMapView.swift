@@ -97,6 +97,7 @@ struct RouteMapView: View {
             if connectivity.isOffline {
                 offlineBanner
             }
+            crimeGridNotice
             truncationNotice
         }
         .padding(.top, 14)
@@ -156,6 +157,40 @@ struct RouteMapView: View {
             return "Reconnecting…"
         }
         return "Retrying every 15 seconds. Routing needs a connection."
+    }
+
+    /// Why the crime overlay is drawing nothing.
+    ///
+    /// The overlay switched on and nothing appearing is the single most
+    /// confusing state this map has, because it is exactly what a genuinely
+    /// safe neighbourhood looks like. The commonest real cause is a lookback
+    /// window shorter than the city's publishing lag — New York's police data
+    /// arrives in quarterly batches, so a 30-day window there can match
+    /// nothing at all — and that has a one-tap fix the user cannot guess at.
+    ///
+    /// Suppressed while offline, where the connection banner is already saying
+    /// the more important thing.
+    @ViewBuilder
+    private var crimeGridNotice: some View {
+        if settings.showCrimeGrid,
+           !connectivity.isOffline,
+           let notice = planner.crimeGridNotice {
+            HStack(spacing: 8) {
+                Image(systemName: "square.grid.3x3.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(notice)
+                    .font(.caption2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 12)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .animation(.snappy, value: notice)
+        }
     }
 
     /// Said out loud rather than implied.

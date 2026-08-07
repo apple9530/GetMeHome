@@ -506,6 +506,9 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    // Counted over `visible`, not everything stored: these
+                    // numbers describe the list the user actually sees, which
+                    // is scoped to the city they are in.
                     HStack {
                         Text("Starred places")
                         Spacer()
@@ -515,45 +518,76 @@ struct SettingsView: View {
                     HStack {
                         Text("Recent searches")
                         Spacer()
-                        Text("\(places.saved.count - places.starred.count)")
+                        Text("\(places.visible.count - places.starred.count)")
                             .foregroundStyle(.secondary).monospacedDigit()
                     }
                     Button("Clear search history", role: .destructive) {
                         confirmClearHistory = true
                     }
-                    .disabled(places.saved.count == places.starred.count)
+                    .disabled(places.visible.count == places.starred.count)
                 } header: {
                     Text("Places")
                 } footer: {
                     Text(
                         "Saved on this device only — where you go regularly "
                             + "never leaves your phone. Starred places are kept "
-                            + "when you clear history."
+                            + "when you clear history. Each city keeps its own "
+                            + "list."
                     )
                 }
 
                 if let meta {
-                    Section("Loaded data") {
+                    Section {
                         row("City", meta.cityName ?? meta.city ?? "—")
                         row("Street segments", meta.segments.formatted())
                         row("Streetlights", meta.streetlights.formatted())
+                        if let share = meta.litShare {
+                            row("Streets with a lamp", share.formatted(.percent.precision(.fractionLength(0))))
+                        }
                         row(
                             "Crime incidents",
                             "\(meta.crimeIncidents.formatted()) over \(meta.crimeHistoryYears) yr"
                         )
+                        if let latest = meta.latestIncident, !latest.isEmpty {
+                            row("Newest incident", freshness(latest, meta.crimeDataAgeDays))
+                        }
                         row("Flock cameras", meta.cameras.formatted())
                         row("Transit stops", meta.transitStops.formatted())
                         row("Searchable places", meta.places.formatted())
+
+                        // Two silent failures made visible. Zero lamps does
+                        // not error anywhere: the night score simply stops
+                        // telling lit streets from dark ones. A feed further
+                        // behind than the shortest lookback does not error
+                        // either — the map just draws nothing.
+                        if meta.streetlights == 0 {
+                            warning(
+                                "No streetlight data. Night scores are based "
+                                    + "on crime alone for this city."
+                            )
+                        }
+                        if let age = meta.crimeDataAgeDays, age >= 30 {
+                            warning(
+                                "This city's crime feed is \(age) days behind, "
+                                    + "so short lookback windows will be empty."
+                            )
+                        }
+                    } header: {
+                        Text("Loaded data")
+                    } footer: {
+                        Text("What the server has built for the selected city.")
                     }
                 }
 
                 Section {
                     Text(
                         """
-                        Safety scores combine DDOT streetlight locations with MPD \
-                        incident reports. They are an estimate from historical data, \
-                        not a prediction. Camera locations are crowdsourced from \
-                        OpenStreetMap and are incomplete.
+                        Safety scores combine the city's own streetlight inventory \
+                        with its police incident reports — DDOT and MPD in \
+                        Washington, DOT and NYPD in New York. They are an estimate \
+                        from historical data, not a prediction, and each city \
+                        publishes on its own schedule. Camera locations are \
+                        crowdsourced from OpenStreetMap and are incomplete.
 
                         Use your own judgement.
                         """
@@ -641,5 +675,25 @@ struct SettingsView: View {
             Spacer()
             Text(value).foregroundStyle(.secondary).monospacedDigit()
         }
+    }
+
+    private func warning(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(.orange)
+    }
+
+    /// "12 Mar 2026 · 148 days ago", or just the date when the age is unknown.
+    private func freshness(_ isoDay: String, _ ageDays: Int?) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .iso8601)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+
+        let shown = formatter.date(from: isoDay)
+            .map { $0.formatted(date: .abbreviated, time: .omitted) } ?? isoDay
+        guard let ageDays, ageDays > 0 else { return shown }
+        return "\(shown) · \(ageDays)d ago"
     }
 }

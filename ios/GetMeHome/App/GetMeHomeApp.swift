@@ -16,7 +16,7 @@ struct GetMeHomeApp: App {
         let settings = AppSettings()
         let location = LocationService()
         let client = RoutingClient(baseURL: settings.serverURL)
-        let places = PlaceStore(city: settings.citySlug)
+        let places = PlaceStore(city: settings.citySlug, bounds: settings.cityBBox)
         let connectivity = ConnectivityMonitor(client: client)
         let offline = OfflineCrimeStore()
 
@@ -64,8 +64,16 @@ struct GetMeHomeApp: App {
                 .onChange(of: settings.citySlug) { _, slug in
                     // Recents and starred places are per city: a Washington
                     // address is not a suggestion worth offering in New York.
-                    places.switchTo(city: slug)
+                    // The bounds go with the slug so the store can also drop
+                    // anything a previous version filed under the wrong city.
+                    places.switchTo(city: slug, bounds: settings.cityBBox)
                     if let slug { offline.loadIfPresent(city: slug) }
+                }
+                .onChange(of: settings.cityBBox) { _, bounds in
+                    // Bounds can arrive without the slug changing — the
+                    // backfill on first launch after upgrading does exactly
+                    // that — and the place filter is inert until they do.
+                    places.switchTo(city: settings.citySlug, bounds: bounds)
                 }
                 .onChange(of: settings.serverURLString) { _, newValue in
                     guard let url = URL(string: newValue) else { return }
@@ -126,6 +134,17 @@ struct RootView: View {
         .onChange(of: planner.itineraries) { _, itineraries in
             guard let first = itineraries.first else { return }
             withAnimation { fit(to: first) }
+        }
+        .task {
+            // Learn the chosen city's bounds if they were never cached. Only
+            // happens once, on the first launch after upgrading from a build
+            // that stored the slug alone; until it completes the saved-places
+            // filter has nothing to compare against and lets everything past.
+            guard settings.hasChosenCity, settings.cityBBox.count != 4 else { return }
+            guard let response = try? await client.cities() else { return }
+            for city in response.cities {
+                settings.backfillBounds(from: city)
+            }
         }
         // Settings that change what is drawn or what was asked for are
         // reacted to here rather than in each control. A preference can

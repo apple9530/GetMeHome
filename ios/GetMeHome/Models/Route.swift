@@ -260,6 +260,33 @@ struct CrimeGridResponse: Codable {
     let nightOnly: Bool
     /// Lookback applied, in days. 0 or nil means everything the server holds.
     let windowDays: Int?
+    /// Which city answered. Optional so an older server still decodes.
+    let city: String?
+    /// How many incidents the city holds in total, and the date of the newest
+    /// one — both about the feed rather than the viewport.
+    ///
+    /// These exist so an empty grid can say *why*. The two cities publish on
+    /// very different cadences: Washington's MPD feed updates daily, New
+    /// York's NYPD complaint files land in quarterly batches. A 30-day
+    /// lookback over New York can therefore match nothing at all, which
+    /// without these fields is indistinguishable from a broken overlay.
+    let heldIncidents: Int?
+    let latestIncident: String?
+
+    /// The newest incident the city holds, as a date.
+    var latestIncidentDate: Date? {
+        guard let latestIncident, !latestIncident.isEmpty else { return nil }
+        return Self.dayFormatter.date(from: latestIncident)
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .iso8601)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 }
 
 struct GeocodeResult: Codable, Hashable, Identifiable {
@@ -276,6 +303,15 @@ struct GeocodeResult: Codable, Hashable, Identifiable {
 
 struct GeocodeResponse: Codable {
     let results: [GeocodeResult]
+    /// The city the server searched in.
+    ///
+    /// Every result is already inside that city's bounding box — the server
+    /// enforces it — so this is not a filter but a receipt. The client checks
+    /// it against the city currently selected and drops the whole response if
+    /// they disagree, which is what makes it impossible for a reply that was
+    /// in flight across a city switch to put Washington addresses into a New
+    /// York list. Optional so an older server still decodes.
+    let city: String?
 }
 
 /// `/health`. Every field past `status` is optional so an older server,
@@ -311,6 +347,16 @@ struct ServerMeta: Codable {
     let city: String?
     let cityName: String?
     let bbox: [Double]
+    /// Date of the newest incident held and how old that makes it, so
+    /// Settings can show whether a lookback shorter than that is even
+    /// possible in this city.
+    let latestIncident: String?
+    let crimeDataAgeDays: Int?
+    /// Share of street segments with a lamp in range, 0-1. Zero means no
+    /// streetlight inventory was ingested — worth seeing, because it does not
+    /// fail anywhere else: night scores simply stop distinguishing lit streets
+    /// from dark ones.
+    let litShare: Double?
 }
 
 // MARK: - Transit stops, timetables and live vehicles

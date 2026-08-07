@@ -632,3 +632,110 @@ def test_a_packed_cell_rounds_its_coordinates_but_stays_placeable(client):
 
     assert body["bbox"][0] <= cell["a"] <= body["bbox"][2]
     assert body["bbox"][1] <= cell["o"] <= body["bbox"][3]
+
+
+# ---------------------------------------------------------------------------
+# Two cities, kept apart
+# ---------------------------------------------------------------------------
+
+
+def test_search_results_say_which_city_answered(client, monkeypatch):
+    """A receipt, not a filter.
+
+    The results are already bbox-filtered. This is what lets the client throw
+    away a reply that was in flight when the user switched cities, which is
+    otherwise indistinguishable from a correct answer and puts one city's
+    addresses into the other's list.
+    """
+    from getmehome.api import main
+
+    monkeypatch.setattr(main, "_nominatim", lambda q, limit, city: [])
+    assert main.geocode(q="union", limit=5, lat=None, lon=None, city="nyc").city == "nyc"
+    assert main.geocode(q="union", limit=5, lat=None, lon=None, city="dc").city == "dc"
+
+
+def test_reverse_refuses_a_pin_in_another_city(client):
+    """Dropping a pin used to be the one lookup with no city attached, so a
+    pin in New York could come back named with a Washington address."""
+    response = client.get(
+        "/reverse", params={"lat": 40.7527, "lon": -73.9772, "city": "dc"}
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "New York" in detail and "Washington" in detail
+
+
+def test_reverse_drops_a_geocoder_answer_outside_the_city(client, monkeypatch):
+    """Nominatim snaps to the nearest named feature, which near a boundary can
+    be over it."""
+    from getmehome.api import main
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "display_name": "Somewhere, Maryland",
+                "name": "Somewhere",
+                "lat": "39.5",
+                "lon": "-77.0",
+            }
+
+    monkeypatch.setattr(main.httpx, "get", lambda *a, **k: _Response())
+    body = client.get(
+        "/reverse", params={"lat": 38.905, "lon": -77.03, "city": "dc"}
+    ).json()
+    assert body["results"] == []
+    assert body["city"] == "dc"
+
+
+# ---------------------------------------------------------------------------
+# An empty crime grid that explains itself
+# ---------------------------------------------------------------------------
+
+
+def test_the_crime_grid_reports_the_city_and_how_fresh_its_data_is(client):
+    body = client.get(
+        "/crime/grid",
+        params={
+            "minLat": 38.895, "minLon": -77.040,
+            "maxLat": 38.912, "maxLon": -77.020,
+        },
+    ).json()
+
+    assert body["city"] == "dc"
+    assert body["heldIncidents"] > 0
+    # ISO day, so the client can say "newest report is from 12 Mar".
+    assert len(body["latestIncident"]) == 10
+
+
+def test_an_empty_grid_still_says_what_the_city_holds(client):
+    """The response shape that produced "the crime graph isn't showing".
+
+    A 200 with no cells is ambiguous between three causes — nothing built,
+    nothing in this viewport, nothing recent enough — and the client can only
+    tell them apart if the server says how much data exists and how old it is.
+    """
+    body = client.get(
+        "/crime/grid",
+        params={"minLat": 0.0, "minLon": 0.0, "maxLat": 0.5, "maxLon": 0.5},
+    ).json()
+
+    assert body["cells"] == []
+    assert body["heldIncidents"] > 0
+    assert body["latestIncident"]
+
+
+def test_meta_reports_data_age_and_lighting(client):
+    body = client.get("/meta").json()
+    assert body["crimeDataAgeDays"] >= 0
+    assert "latestIncident" in body
+    # The fixture lights one column of a grid, so some segments have a lamp
+    # in range and some do not. What matters is that the number is a share of
+    # segments and not a median score: ranking puts every unlit segment at
+    # zero, so a median would read as "no lighting data" in any city with a
+    # substantial unlit tail.
+    assert 0.0 < body["litShare"] < 1.0

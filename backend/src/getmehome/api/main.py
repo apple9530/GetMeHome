@@ -256,6 +256,12 @@ def meta(city: str | None = Query(None)) -> MetaResponse:
     state = _require_state(city)
     m = state.graph.meta
     network = state.transit.network if state.transit else None
+    latest = state.crime.latest if state.crime else None
+    age_days = (
+        int((datetime.now(UTC) - latest).total_seconds() // 86400)
+        if latest
+        else 0
+    )
     return MetaResponse(
         builtAt=m.get("built_at", ""),
         nodes=state.graph.n_nodes,
@@ -272,6 +278,12 @@ def meta(city: str | None = Query(None)) -> MetaResponse:
         city=state.city.slug,
         cityName=state.city.name,
         bbox=m.get("bbox", state.city.bbox.as_list()),
+        latestIncident=latest.date().isoformat() if latest else "",
+        crimeDataAgeDays=age_days,
+        # Read off the scored graph rather than out of `meta`, which only the
+        # build populates. A zero here has to mean "no lighting data", not
+        # "this graph was scored by something other than the build script".
+        litShare=round(float((state.graph.seg_lit > 0.0).mean()), 3),
     )
 
 
@@ -470,17 +482,36 @@ def crime_grid(
     # even if the client asks for one the graph was not built with.
     window = state.graph.resolved_window(windowDays) if windowDays else None
     if state.crime is None or state.crime.count == 0:
+        log.warning(
+            "crime grid for %s: no incidents loaded at all — was the city "
+            "built with crime data?", state.city.slug,
+        )
         return CrimeGridResponse(
             cells=[],
             radius=0.0,
             totalIncidents=0,
             nightOnly=nightOnly,
             windowDays=window or 0,
+            city=state.city.slug,
         )
 
     cells, radius = state.crime.cells(
         minLat, minLon, maxLat, maxLon, night_only=nightOnly, window_days=window
     )
+    latest = state.crime.latest
+    if not cells:
+        # Worth a line in the log, because this is the shape the "the crime
+        # graph isn't showing" report takes: a 200 with an empty list. Saying
+        # how much data is held and how old it is turns three possible causes
+        # — nothing built, nothing in the viewport, nothing recent enough —
+        # into one glance.
+        log.info(
+            "crime grid for %s: no cells in %.4f,%.4f..%.4f,%.4f "
+            "(window=%s, nightOnly=%s, %d incidents held, newest %s)",
+            state.city.slug, minLat, minLon, maxLat, maxLon,
+            window, nightOnly, state.crime.count,
+            latest.date().isoformat() if latest else "none",
+        )
 
     return CrimeGridResponse(
         cells=[
@@ -517,6 +548,9 @@ def crime_grid(
         totalIncidents=sum(c.total for c in cells),
         nightOnly=nightOnly,
         windowDays=window or 0,
+        city=state.city.slug,
+        heldIncidents=state.crime.count,
+        latestIncident=latest.date().isoformat() if latest else "",
     )
 
 
@@ -659,7 +693,11 @@ def geocode(
     if query.is_address:
         results = _rank_addresses(query, results)
 
-    return GeocodeResponse(results=results[:limit])
+    # Tagged with the city that answered. Every result above has already been
+    # bbox-filtered, so this is not the filter — it is how the client proves
+    # the answer belongs to the city it is currently showing, and throws away
+    # one that arrived late from the city it just switched away from.
+    return GeocodeResponse(results=results[:limit], city=selected.slug)
 
 
 def _matches_address(query, name: str) -> bool:
@@ -760,8 +798,27 @@ def _nominatim_name(row: dict, display: str) -> str:
 
 
 @app.get("/reverse", response_model=GeocodeResponse)
-def reverse(lat: float = Query(...), lon: float = Query(...)):
-    """Name the place at a coordinate, for the 'drop a pin' flow."""
+def reverse(
+    lat: float = Query(...),
+    lon: float = Query(...),
+    city: str | None = Query(None),
+):
+    """Name the place at a coordinate, for the 'drop a pin' flow.
+
+    Takes a city like every other lookup. It used to take none, which meant a
+    pin dropped in New York was named by an unbounded geocoder query and could
+    come back with a Washington address — a second way for the two cities to
+    end up mixed in one list, and the one nobody would think to check because
+    the coordinate was obviously right.
+    """
+    selected = _require_city(city)
+    if not selected.bbox.contains(lat, lon):
+        # A pin outside the selected city is not something to name, it is a
+        # wrong-city error — the router will refuse it a moment later anyway.
+        raise HTTPException(
+            status_code=422, detail=_off_map(lat, lon, selected, "That")
+        )
+
     try:
         response = httpx.get(
             f"{GEOCODER_URL}/reverse",
@@ -778,16 +835,28 @@ def reverse(lat: float = Query(...), lon: float = Query(...)):
 
     display = row.get("display_name", "")
     if not display:
-        return GeocodeResponse(results=[])
+        return GeocodeResponse(results=[], city=selected.slug)
+
+    try:
+        result_lat, result_lon = float(row["lat"]), float(row["lon"])
+    except (KeyError, TypeError, ValueError):
+        return GeocodeResponse(results=[], city=selected.slug)
+
+    # Nominatim snaps to the nearest named feature, which near a boundary can
+    # be over it. Same rule as forward search: nothing outside the city.
+    if not selected.bbox.contains(result_lat, result_lon):
+        return GeocodeResponse(results=[], city=selected.slug)
+
     return GeocodeResponse(
         results=[
             GeocodeResult(
                 name=row.get("name") or display.split(",")[0],
                 address=display,
-                lat=float(row["lat"]),
-                lon=float(row["lon"]),
+                lat=result_lat,
+                lon=result_lon,
             )
-        ]
+        ],
+        city=selected.slug,
     )
 
 

@@ -162,6 +162,7 @@ def build(
     else:
         lights = load_streetlights(paths.lights)
     log.info("%d streetlights", len(lights))
+    _check_lights(city, lights)
 
     # --- crime ---------------------------------------------------------
     if refresh or not paths.crime.exists():
@@ -177,6 +178,7 @@ def build(
 
     _warn_on_unknown_offences(city, incidents)
     _report_premises(city, incidents)
+    _report_recency(city, incidents)
 
     # --- extra cameras -------------------------------------------------
     cameras = list(osm_cameras)
@@ -321,6 +323,66 @@ def _warn_on_unknown_offences(city: City, incidents: list) -> None:
             "More than half the incidents are unweighted. That usually means "
             "the vocabulary belongs to another city, or the feed's offence "
             "column has been renamed — check cities.%s.", city.slug.upper(),
+        )
+
+
+def _check_lights(city: City, lights: list) -> None:
+    """Refuse to build a city whose streetlight inventory came back empty.
+
+    Lighting is half of the night score, and with no lamps every segment ties
+    at zero — `rank_scores` then declines to rank (there is no comparative
+    information in a total tie) and the night surface is crime alone. Nothing
+    errors; the scores just quietly stop distinguishing dark streets from lit
+    ones, which is invisible unless you go looking. The commonest cause is a
+    portal publishing coordinates under a column name the ingester does not
+    know, so the message points at the probe that shows the real schema.
+    """
+    if lights:
+        return
+    raise RuntimeError(
+        f"{city.slug}: the streetlight source returned no usable lamps. "
+        f"Night scores would be crime-only and would not distinguish a lit "
+        f"street from an unlit one. Check what the feed actually publishes:\n"
+        f"    python -m getmehome.ingest.probe --city {city.slug} --lights"
+    )
+
+
+def _report_recency(city: City, incidents: list) -> None:
+    """Say how fresh the crime feed is, and warn when a window cannot work.
+
+    Cities publish on very different cadences. Washington's MPD feed is
+    updated daily; New York's NYPD complaint files land in quarterly batches.
+    A 30-day lookback over a feed whose newest incident is three months old
+    matches nothing at all — the map draws no hexagons and the route scores
+    fall back to an empty surface — and there is no error anywhere to explain
+    it. So the build says it plainly.
+    """
+    if not incidents:
+        log.error("%s: no crime incidents at all — the map grid will be empty", city.slug)
+        return
+
+    newest = max(i.reported_at for i in incidents)
+    age_days = (datetime.now(UTC) - newest).days
+    log.info(
+        "crime data: newest incident %s (%d days old), oldest %s",
+        newest.date().isoformat(),
+        age_days,
+        min(i.reported_at for i in incidents).date().isoformat(),
+    )
+
+    shortest = min(CRIME.windows_days)
+    if age_days >= shortest:
+        unusable = sorted(w for w in CRIME.windows_days if w <= age_days)
+        log.warning(
+            "%s's feed is %d days behind, so the %s lookback%s will be empty "
+            "— no incidents are recent enough to fall inside %s. This is the "
+            "feed's publishing cadence, not a bug in the build; the app now "
+            "says so rather than drawing nothing.",
+            city.name,
+            age_days,
+            ", ".join(f"{w}-day" for w in unusable),
+            "" if len(unusable) == 1 else "s",
+            "it" if len(unusable) == 1 else "them",
         )
 
 

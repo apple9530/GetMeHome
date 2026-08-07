@@ -197,6 +197,17 @@ class CrimeGridResponse(BaseModel):
     nightOnly: bool = False
     # Lookback applied, in days. 0 means everything held.
     windowDays: int = 0
+    # Which city answered. Lets the client refuse to draw a grid it did not
+    # ask for rather than painting one city's hexagons over another's map.
+    city: str = ""
+    # How many incidents the city holds in total, and the date of the most
+    # recent one. Both are about the *feed*, not the viewport, and they exist
+    # so an empty grid can explain itself: New York's police data is published
+    # in quarterly batches, so a 30-day lookback over New York can legitimately
+    # match nothing while Washington's near-live feed matches plenty. Without
+    # these the overlay simply fails to appear and looks broken.
+    heldIncidents: int = 0
+    latestIncident: str = ""
 
 
 class GeocodeResult(BaseModel):
@@ -208,6 +219,11 @@ class GeocodeResult(BaseModel):
 
 class GeocodeResponse(BaseModel):
     results: list[GeocodeResult]
+    # The city these results were searched in. Every result is inside its
+    # bounding box; the client checks this against the city it asked for and
+    # discards the response if they disagree, so a stale or misrouted answer
+    # can never mix two cities' addresses into one list.
+    city: str = ""
 
 
 class MetaResponse(BaseModel):
@@ -227,6 +243,20 @@ class MetaResponse(BaseModel):
     city: str = ""
     cityName: str = ""
     bbox: list[float]
+    # ISO date of the most recent incident held, and how stale that makes the
+    # data. Surfaced because the two cities' feeds update on completely
+    # different cadences and "no crime data on the map" is otherwise
+    # indistinguishable from a bug.
+    latestIncident: str = ""
+    crimeDataAgeDays: int = 0
+    # Share of segments with any lamp in range, 0-1.
+    #
+    # Deliberately not the median lighting score: lighting is *ranked* against
+    # the city and every segment with no lamp near it ties at the bottom, so a
+    # city where a third of streets are unlit has a median of zero and looks
+    # identical to one with no streetlight data at all. This number cannot be
+    # confused that way — zero means no inventory was ingested.
+    litShare: float = 0.0
 
 
 # --------------------------------------------------------------------------

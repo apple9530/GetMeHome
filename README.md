@@ -22,7 +22,7 @@ Worth being straight about this before you invest time in it.
 
 | Part | State |
 |---|---|
-| Backend routing, safety model, transit, crime grid, search, sharing, API | Written and covered by 204 passing tests |
+| Backend routing, safety model, transit, crime grid, search, sharing, API | Written and covered by 292 passing tests |
 | `RouteTracker` navigation maths | Algorithm validated independently against hand-computed cases |
 | iOS app | Compiles and launches; UI beyond that not exercised here |
 | The DC data build (`make graph`) | Streetlight + crime ingestion fixed against the real feeds |
@@ -39,6 +39,32 @@ Expect the first `make graph CITY=nyc` to need a column name changed. The build
 is written for that: every field goes through a candidate list, and it logs
 loudly when a large share of incidents fall outside the crime vocabulary, which
 is what a renamed offence column looks like.
+
+Before building a new city, run:
+
+```bash
+make probe CITY=nyc
+```
+
+It fetches one row from each configured dataset and prints, field by field,
+which column the ingester resolved and what it found. This exists because a
+wrong column name has *no symptom*: the fetch succeeds, every row parses to
+nothing, and the build completes with zero streetlights — after which the night
+score quietly stops distinguishing a lit street from a dark one, because every
+segment ties at the bottom of the ranking. The probe turns that into one line
+of output. (A build with no lamps at all is now refused outright, for the same
+reason.)
+
+Two feed properties the app now surfaces rather than hides:
+
+* **Coordinates may live in `the_geom` rather than in `latitude`/`longitude`.**
+  Many of NYC's asset datasets publish only the GeoJSON geometry. Both are read.
+* **Publishing cadence differs enormously between cities.** Washington's MPD
+  feed updates daily; New York's NYPD complaint files land in quarterly
+  batches. A 30-day lookback over New York can therefore match nothing at all.
+  The build warns which windows a feed is too far behind to fill, `/meta` and
+  `/crime/grid` report the newest incident held, and the map says so on the
+  banner instead of drawing an empty overlay that looks like a bug.
 
 The real-time feeds have the same gap in both cities: Everything there fails soft by design — a wrong field name
 degrades to scheduled times rather than to an error — so the failure mode is
@@ -163,6 +189,13 @@ has no premises column, so its policy is the identity and nothing changes.
 Because "unknown" is generous, a *wrong column name* would silently disable the
 whole filter, so the build fails loudly if a city that declares a premises
 policy sees more than half its incidents come back without one.
+
+Incidents a premises policy zeroes out are **dropped from the map grid**, not
+counted at weight zero. Counting them produced hexagons that read "24
+incidents" and drew at zero intensity — invisible cells with a number attached
+— and over a residential viewport the whole overlay could disappear that way
+while the response still claimed hundreds of incidents. The counts and the
+colours now describe the same thing: street crime.
 
 The related fix: NYPD's `SEX CRIMES` is a much broader bucket than its name
 suggests — forcible touching sits in it alongside far graver offences, and it is
@@ -856,6 +889,30 @@ to fifth. If Nominatim is down, search degrades rather than breaking.
 Recent searches and starred places are stored **on the device only**. Where
 someone goes regularly is among the more sensitive things an app can know,
 and the server never needs that list to plan a route.
+
+### One city's addresses never appear in another's
+
+There are four independent places two cities' addresses can get mixed, and
+each one is closed separately, because any one of them alone produces the same
+symptom — a list of real addresses you cannot route to.
+
+1. **The local index and the geocoder are both bbox-filtered.** A result
+   outside the selected city is dropped whatever its source. Nominatim is also
+   asked with a `viewbox`, but that is a hint and is not trusted.
+2. **Every response is tagged with the city that answered**, and the app
+   discards one that disagrees with the city currently selected. This is what
+   makes a reply that was in flight across a city switch harmless: without it,
+   a search started in Washington could land in New York's list and look
+   entirely legitimate.
+3. **Reverse geocoding takes a city too.** Dropping a pin used to be the one
+   lookup with no city attached, so a pin in New York could come back labelled
+   with a Washington address.
+4. **Saved places are filtered by position, not only by storage key.** Recents
+   and stars are stored per city, but the key alone trusts history — anything
+   saved before cities existed, or before one had been chosen, went into a
+   shared list. Filtering on coordinates cannot be fooled by that, and the
+   one-time migration of the old shared list now splits it by city instead of
+   assuming it was all Washington.
 
 ---
 

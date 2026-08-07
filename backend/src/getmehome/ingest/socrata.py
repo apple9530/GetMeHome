@@ -55,11 +55,19 @@ _NYPD_PREMISES = ("prem_typ_desc", "premises_desc", "premise_type")
 _NYPD_ID = ("cmplnt_num", "complaint_number")
 
 # --- NYC DOT street light columns ------------------------------------------
-_LIGHT_LAT = ("latitude", "lat")
-_LIGHT_LON = ("longitude", "lon", "lng")
+_LIGHT_LAT = ("latitude", "lat", "y_coord", "point_y")
+_LIGHT_LON = ("longitude", "lon", "lng", "x_coord", "point_x")
 _LIGHT_TYPE = ("lamp_type", "luminaire_type", "fixture_type", "bulb_type")
 _LIGHT_WATT = ("wattage", "watts", "lamp_wattage")
 _LIGHT_HEIGHT = ("pole_height", "height", "mast_height")
+
+# Socrata's own geometry column, present on most of NYC's asset datasets and
+# often the *only* place the coordinate appears — plenty of them publish
+# `the_geom` plus state-plane x/y and no latitude/longitude at all. Reading
+# only the named columns meant every row was skipped and the city built with
+# zero streetlights, which does not raise anything: it just makes the night
+# score crime-only. See `coordinates_of`.
+_GEOM_COLUMNS = ("the_geom", "geom", "location", "point", "the_geom_webmercator")
 
 
 class SocrataError(RuntimeError):
@@ -79,6 +87,57 @@ def pick(row: dict, candidates: tuple[str, ...], default=None):
         if value not in (None, ""):
             return value
     return default
+
+
+def coordinates_of(
+    row: dict,
+    lat_names: tuple[str, ...],
+    lon_names: tuple[str, ...],
+) -> tuple[float, float] | None:
+    """A row's (lat, lon), from named columns or from its geometry.
+
+    Named columns are tried first because they are unambiguous. Falling back to
+    ``the_geom`` matters because a large share of NYC's asset datasets publish
+    the point only as GeoJSON — and a portal that does that returns rows which
+    look complete and parse to nothing, which is the worst possible failure
+    mode: no error, no data, and a score that silently stops discriminating.
+
+    Two shapes are handled. Socrata's older "location" type is a flat object
+    with ``latitude``/``longitude`` string fields; the newer geometry type is
+    GeoJSON, whose ``coordinates`` are **lon, lat** in that order. Getting that
+    order wrong puts New York in the Indian Ocean, where the bounding-box check
+    rejects it — so it is worth stating rather than remembering.
+    """
+    lat = pick(row, lat_names)
+    lon = pick(row, lon_names)
+    if lat is not None and lon is not None:
+        try:
+            return float(lat), float(lon)
+        except (TypeError, ValueError):
+            pass
+
+    geom = pick(row, _GEOM_COLUMNS)
+    if not isinstance(geom, dict):
+        return None
+
+    # Socrata "location": {"latitude": "40.7", "longitude": "-73.9", ...}
+    if "latitude" in geom and "longitude" in geom:
+        try:
+            return float(geom["latitude"]), float(geom["longitude"])
+        except (TypeError, ValueError):
+            return None
+
+    coords = geom.get("coordinates")
+    # Unwrap MultiPoint and the degenerate single-part geometries that appear
+    # when a dataset is published from a shapefile.
+    while isinstance(coords, list) and coords and isinstance(coords[0], list):
+        coords = coords[0]
+    if not isinstance(coords, list) or len(coords) < 2:
+        return None
+    try:
+        return float(coords[1]), float(coords[0])  # GeoJSON is lon, lat
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_rows(
@@ -229,14 +288,12 @@ def fetch_socrata_crime(
             continue
 
         for row in rows:
-            lat = pick(row, _NYPD_LAT)
-            lon = pick(row, _NYPD_LON)
-            if lat is None or lon is None:
+            # Same geometry fallback as the lights, for the same reason: the
+            # named columns are the normal case but not the only one.
+            point = coordinates_of(row, _NYPD_LAT, _NYPD_LON)
+            if point is None:
                 continue
-            try:
-                lat_f, lon_f = float(lat), float(lon)
-            except (TypeError, ValueError):
-                continue
+            lat_f, lon_f = point
             # NYPD nulls a small number of coordinates to 0,0.
             if not city.bbox.contains(lat_f, lon_f):
                 continue
@@ -313,18 +370,19 @@ def fetch_socrata_streetlights(
             log.warning("skipping %s: %s", dataset, exc)
             continue
 
+        # Counted so a dataset that parses to nothing can say which half of
+        # the problem it is: no coordinate anywhere in the row, or a
+        # coordinate that lands outside the city.
+        no_coords = out_of_bbox = 0
+
         for row in rows:
-            lat = pick(row, _LIGHT_LAT)
-            lon = pick(row, _LIGHT_LON)
-            if lat is None or lon is None:
-                # Some rows carry only a projected point; skip rather than
-                # guess a coordinate system.
+            point = coordinates_of(row, _LIGHT_LAT, _LIGHT_LON)
+            if point is None:
+                no_coords += 1
                 continue
-            try:
-                lat_f, lon_f = float(lat), float(lon)
-            except (TypeError, ValueError):
-                continue
+            lat_f, lon_f = point
             if not city.bbox.contains(lat_f, lon_f):
+                out_of_bbox += 1
                 continue
 
             height = pick(row, _LIGHT_HEIGHT)
@@ -345,6 +403,19 @@ def fetch_socrata_streetlights(
                     ),
                     height_m=height_m or 8.0,
                 )
+            )
+
+        if rows and no_coords:
+            level = log.error if no_coords == len(rows) else log.info
+            level(
+                "%s: %d of %d rows had no readable coordinate. Columns "
+                "present on the first row: %s",
+                dataset, no_coords, len(rows), ", ".join(sorted(rows[0])),
+            )
+        if out_of_bbox:
+            log.info(
+                "%s: %d rows fell outside %s's bounding box",
+                dataset, out_of_bbox, city.slug,
             )
 
     log.info("%d streetlights", len(lights))

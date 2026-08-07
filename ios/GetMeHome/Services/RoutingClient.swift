@@ -230,9 +230,14 @@ actor RoutingClient {
 
     // MARK: - Places
 
+    /// Search for a place in one city.
+    ///
+    /// Returns the whole response rather than just the results, because the
+    /// city it came back tagged with is part of the answer — see
+    /// `GeocodeResponse.city`. Callers check it before showing anything.
     func geocode(
         _ query: String, near: CLLocationCoordinate2D? = nil, city: String?
-    ) async throws -> [GeocodeResult] {
+    ) async throws -> GeocodeResponse {
         var items = [URLQueryItem(name: "q", value: query)]
         if let near {
             // Lets the server break ties between same-named streets in
@@ -240,20 +245,25 @@ actor RoutingClient {
             items.append(URLQueryItem(name: "lat", value: String(near.latitude)))
             items.append(URLQueryItem(name: "lon", value: String(near.longitude)))
         }
-        let response: GeocodeResponse = try await get(
-            "/geocode", query: items, city: city
-        )
-        return response.results
+        return try await get("/geocode", query: items, city: city)
     }
 
-    func reverseGeocode(_ coordinate: CLLocationCoordinate2D) async throws -> GeocodeResult? {
+    /// Name the place at a coordinate, for the dropped-pin flow.
+    ///
+    /// Takes a city like every other lookup. It used to send none, which meant
+    /// a pin dropped in New York was named by an unbounded geocoder query and
+    /// could come back labelled with a Washington address — the same
+    /// two-cities-in-one-list problem as search, arriving by a different door.
+    func reverseGeocode(
+        _ coordinate: CLLocationCoordinate2D, city: String?
+    ) async throws -> GeocodeResult? {
         let response: GeocodeResponse = try await get(
             "/reverse",
             query: [
                 URLQueryItem(name: "lat", value: String(coordinate.latitude)),
                 URLQueryItem(name: "lon", value: String(coordinate.longitude)),
             ],
-            city: nil
+            city: city
         )
         return response.results.first
     }

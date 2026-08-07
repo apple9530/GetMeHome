@@ -106,6 +106,13 @@ final class PlannerViewModel {
     /// silently a week old is worse than no overlay.
     private(set) var crimeCellsAreOffline = false
 
+    /// Why the crime overlay is showing nothing, when it is showing nothing.
+    ///
+    /// An empty overlay used to be indistinguishable from a working one over a
+    /// quiet area, which meant a server error, an unbuilt city and a lookback
+    /// window with no data in it all rendered as the same blank map.
+    private(set) var crimeGridNotice: String?
+
     /// Increments per search so a stale task can tell it has been
     /// superseded and leave the newer one's state alone.
     private var searchGeneration = 0
@@ -267,7 +274,9 @@ final class PlannerViewModel {
             lat: coordinate.latitude,
             lon: coordinate.longitude
         )
-        let resolved = (try? await client.reverseGeocode(coordinate)) ?? fallback
+        let resolved = (try? await client.reverseGeocode(
+            coordinate, city: settings.citySlug
+        )) ?? fallback
         switch field {
         case .origin: origin = .place(resolved)
         case .destination: destination = .place(resolved)
@@ -307,14 +316,30 @@ final class PlannerViewModel {
             try? await Task.sleep(for: .milliseconds(320))
             guard !Task.isCancelled else { return }
 
+            let askedFor = settings.citySlug
             do {
-                let results = try await client.geocode(
+                let response = try await client.geocode(
                     query,
                     near: location.location?.coordinate,
-                    city: settings.citySlug
+                    city: askedFor
                 )
                 guard !Task.isCancelled, generation == searchGeneration else { return }
-                searchResults = results
+
+                // Two checks, not one. The generation guard already discards a
+                // reply from an earlier keystroke; these discard a reply from
+                // an earlier *city* — one sent before the user switched, or
+                // one the server answered for a different city than we asked
+                // about. Either way the results are real addresses in the
+                // wrong place, which is worse than none: they look routable
+                // and are not.
+                guard askedFor == settings.citySlug else { return }
+                if let answered = response.city, let askedFor, answered != askedFor {
+                    searchResults = []
+                    searchError = "The server searched \(answered) instead of "
+                        + "\(askedFor). Reopen the city picker."
+                    return
+                }
+                searchResults = response.results
             } catch is CancellationError {
                 return
             } catch let error as URLError where error.code == .cancelled {
@@ -456,6 +481,7 @@ final class PlannerViewModel {
         else {
             cameras = []
             crimeCells = []
+            crimeGridNotice = nil
             transitStops = []
             return
         }
@@ -483,6 +509,7 @@ final class PlannerViewModel {
                 await loadCrimeGrid(in: bounds)
             } else {
                 crimeCells = []
+                crimeGridNotice = nil
                 selectedCell = nil
             }
 
@@ -509,22 +536,29 @@ final class PlannerViewModel {
     /// incidents are reported, and preferring it because connectivity was bad
     /// a minute ago would show week-old data to someone back on Wi-Fi.
     private func loadCrimeGrid(in bounds: MapBounds) async {
+        let askedFor = settings.citySlug
         do {
             let response = try await client.crimeGrid(
                 in: bounds,
                 nightOnly: settings.crimeGridNightOnly,
                 windowDays: settings.crimeWindow.rawValue,
-                city: settings.citySlug
+                city: askedFor
             )
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, askedFor == settings.citySlug else { return }
             crimeCells = response.cells
             crimeCellRadius = response.radius
             crimeCellsAreOffline = false
+            crimeGridNotice = Self.notice(for: response, window: settings.crimeWindow)
             connectivity.recordSuccess()
             return
         } catch {
             guard !Task.isCancelled else { return }
             connectivity.record(error)
+            // An overlay that fails has to say so. It used to fall straight
+            // through to the offline store and, when nothing was downloaded,
+            // set an empty array — so a 503 from a city the server had not
+            // finished building looked exactly like an area with no crime.
+            crimeGridNotice = Self.message(for: error)
         }
 
         // Server unreachable. Fall back only if there is something stored —
@@ -544,19 +578,61 @@ final class PlannerViewModel {
         crimeCells = fallback.cells
         crimeCellRadius = fallback.radius
         crimeCellsAreOffline = true
+        crimeGridNotice = nil
     }
 
-    /// Drop everything drawn for the previous city.
+    /// Why an empty crime grid is empty, or nil when it is not empty.
+    ///
+    /// Three different situations produce zero hexagons and they need
+    /// different responses from the user, so they get different sentences:
+    /// the city holds no incident data at all (rebuild it), the feed has not
+    /// published anything recent enough for the chosen lookback (pick a longer
+    /// one), or this particular viewport is genuinely quiet (nothing to do).
+    ///
+    /// The middle case is the one that prompted this. New York's police data
+    /// is published in quarterly batches, so a 30-day window over New York can
+    /// legitimately match nothing while Washington's daily feed matches
+    /// plenty — and the only visible symptom was an overlay that did not
+    /// appear.
+    private static func notice(
+        for response: CrimeGridResponse, window: CrimeWindow
+    ) -> String? {
+        guard response.cells.isEmpty else { return nil }
+
+        guard let held = response.heldIncidents, held > 0 else {
+            return "No crime data loaded for this city. Build it on the "
+                + "server, then reopen the map."
+        }
+
+        if let latest = response.latestIncidentDate {
+            let age = Int(Date().timeIntervalSince(latest) / 86400)
+            if age >= window.rawValue {
+                return "No incidents in the last \(window.label.lowercased()). "
+                    + "This city's police feed is \(age) days behind — its "
+                    + "newest report is from "
+                    + latest.formatted(date: .abbreviated, time: .omitted)
+                    + ". Choose a longer window to see it."
+            }
+        }
+        return "No incidents here in the last \(window.label.lowercased())."
+    }
+
+    /// Drop everything drawn for, or searched in, the previous city.
     func clearOverlays() {
         overlayTask?.cancel()
         lastOverlayBounds = nil
         cameras = []
         crimeCells = []
+        crimeGridNotice = nil
         transitStops = []
         transitStopsTruncated = false
         crimeCellsAreOffline = false
         selectedCell = nil
         selectedStop = nil
+        // Search results belong to a city too. Leaving them meant the list
+        // under the field still held the previous city's addresses until the
+        // next keystroke replaced them.
+        clearSearch()
     }
 
     /// Refetch the overlays for the viewport already on screen.
