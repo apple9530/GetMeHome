@@ -524,6 +524,17 @@ ssh root@your-server 'cd getmehome/deploy && docker compose restart api'
 The API is never published to the host — only Caddy can reach it — so there is
 no way to hit it over plain HTTP even by accident.
 
+### AWS, on your own domain
+
+**[`deploy/aws.md`](deploy/aws.md)** is a start-to-finish walkthrough: rent a
+Lightsail instance, point a subdomain at it, install Docker, ship the built
+data up, and get HTTPS. Written assuming no prior AWS knowledge.
+
+The one thing worth knowing before you start: **build the data on your machine
+and copy it up, never on the server.** Parsing New York's OSM extract needs
+several gigabytes of memory, which a small instance does not have, and the
+build gets killed halfway with a message that does not explain why.
+
 ### Fly.io
 
 `deploy/fly.toml` is the managed equivalent: HTTPS, a persistent volume and an
