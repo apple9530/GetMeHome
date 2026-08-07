@@ -9,20 +9,31 @@ struct GetMeHomeApp: App {
     @State private var planner: PlannerViewModel
     @State private var client: RoutingClient
     @State private var places: PlaceStore
+    @State private var connectivity: ConnectivityMonitor
+    @State private var offline: OfflineCrimeStore
 
     init() {
         let settings = AppSettings()
         let location = LocationService()
         let client = RoutingClient(baseURL: settings.serverURL)
         let places = PlaceStore(city: settings.citySlug)
+        let connectivity = ConnectivityMonitor(client: client)
+        let offline = OfflineCrimeStore()
 
         _settings = State(initialValue: settings)
         _location = State(initialValue: location)
         _client = State(initialValue: client)
         _places = State(initialValue: places)
+        _connectivity = State(initialValue: connectivity)
+        _offline = State(initialValue: offline)
         _planner = State(
             initialValue: PlannerViewModel(
-                client: client, location: location, settings: settings, places: places
+                client: client,
+                location: location,
+                settings: settings,
+                places: places,
+                connectivity: connectivity,
+                offline: offline
             )
         )
     }
@@ -35,22 +46,35 @@ struct GetMeHomeApp: App {
                 .environment(speech)
                 .environment(planner)
                 .environment(places)
+                .environment(connectivity)
+                .environment(offline)
                 .task {
                     location.requestAuthorization()
                     location.startUpdating()
                     // The client has to know the city before any request goes
                     // out, including the first overlay fetch on appear.
                     await client.updateCity(settings.citySlug)
+                    if let city = settings.citySlug {
+                        offline.loadIfPresent(city: city)
+                    }
+                    // One probe at launch, so the first thing the app does is
+                    // not a route request that fails.
+                    connectivity.start()
                 }
                 .onChange(of: settings.citySlug) { _, slug in
                     Task { await client.updateCity(slug) }
                     // Recents and starred places are per city: a Washington
                     // address is not a suggestion worth offering in New York.
                     places.switchTo(city: slug)
+                    if let slug { offline.loadIfPresent(city: slug) }
                 }
                 .onChange(of: settings.serverURLString) { _, newValue in
                     guard let url = URL(string: newValue) else { return }
-                    Task { await client.updateBaseURL(url) }
+                    Task {
+                        await client.updateBaseURL(url)
+                        // A new address is a new question about reachability.
+                        await connectivity.probe()
+                    }
                 }
         }
     }

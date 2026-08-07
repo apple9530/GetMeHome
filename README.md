@@ -583,6 +583,7 @@ reasonable cadence; nothing does it for you.
 | `POST /route` | Plan itineraries. Body takes origin, destination, modes, `avoidCameras`, optional `departAt`, `forceNight` and `crimeWindowDays`. |
 | `GET /cameras` | Flock/ALPR cameras in a bbox, for the overlay. |
 | `GET /crime/grid` | Incidents binned into hexagons over a bbox. Takes `windowDays` and `nightOnly`. |
+| `GET /crime/pack` | The whole city's grid at every window, for offline use. Cached and ETagged. |
 | `GET /transit/stops` | Metro and bus stops in a bbox, capped and reporting whether it capped. |
 | `GET /transit/stop/{id}/board` | The next departures from a stop, with live predictions folded in. |
 | `GET /transit/trip/{pattern}/{trip}` | A vehicle's whole journey: every call, its time, and where it is now. |
@@ -671,6 +672,71 @@ of this existed. It must never turn a working timetable into an error page.
 
 > Set `WMATA_API_KEY` to enable live data. Without it the boards still work
 > from the timetable and say so.
+
+---
+
+## Working without a server
+
+The person this app is for is out at night, possibly somewhere with no signal.
+So the crime overlay is downloadable, and the app is explicit about when it is
+using downloaded data.
+
+### What gets downloaded
+
+**Finished hexagons, not incidents.** DC holds well over a hundred thousand
+incidents over three years and New York several times that. Shipping those
+would mean a large download and re-implementing severity weighting, Gaussian
+binning and hex rounding in Swift — three chances to disagree with the server
+and produce an overlay that is subtly not the one the routing uses. Instead the
+server bins the whole city once per (window, radius) pair and ships the result,
+so the offline overlay *is* the online one at the same radius.
+
+Two things keep it small:
+
+- **Only the coarser ladder rungs.** Halving the radius quadruples the cell
+  count, and the fine levels only appear when zoomed into a few blocks — the
+  view someone with no signal is least likely to need. 375 m and up is baked;
+  the app rounds up to the nearest baked level and says so.
+- **Centres, not corners.** Twelve floats per cell is several times the rest of
+  the record. The pack carries the city's projection origin and the client
+  derives the six corners — the same arithmetic, moved to where it is free.
+
+Night-only is deliberately not baked: it would double the file for one toggle,
+so the app disables it while offline rather than silently showing the wrong
+thing.
+
+Offered on the city picker, because that is where someone is deliberately
+setting the app up and the moment to download a few megabytes is while you
+still have a connection. The button says *offline crime data*, not "offline
+maps": routing needs the whole graph, the search index and the timetable, which
+is a different order of size and a promise this cannot keep.
+
+### Knowing the server is gone
+
+Connectivity is judged by **real requests, not by the radio**. A phone can have
+four bars and still not reach a backend on someone's laptop, and `NWPathMonitor`
+would call that online. Anything that fails as unreachable marks the app
+offline; a `/health` poll every fifteen seconds brings it back.
+
+Only `.unreachable` counts. A 404 or a 503 means the server *answered* — the
+connection is fine and something else is wrong, and telling someone to check
+their Wi-Fi for that wastes their time.
+
+While it is down, a banner sits at the top of the map for as long as the
+condition lasts — this is a state, not an event — saying what still works
+rather than only what does not, with a manual retry beside the automatic one.
+
+### Downloaded data is a fallback, never a cache
+
+The server is tried **first, every time**, even immediately after a failure.
+Downloaded cells go stale as incidents are reported, and preferring them
+because connectivity was bad a minute ago would mean showing week-old data to
+someone back on Wi-Fi. The fallback only runs once a request has actually
+failed.
+
+And when it does run, the app says so: the crime cell sheet is labelled
+*downloaded data* in orange. An overlay that is silently a week old is worse
+than no overlay.
 
 ---
 

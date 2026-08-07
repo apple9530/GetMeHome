@@ -98,6 +98,13 @@ final class PlannerViewModel {
     private let client: RoutingClient
     private let location: LocationService
     private let settings: AppSettings
+    private let connectivity: ConnectivityMonitor
+    private let offline: OfflineCrimeStore
+
+    /// True when the crime grid on screen came from downloaded data rather
+    /// than the server. Surfaced so the map can say so — an overlay that is
+    /// silently a week old is worse than no overlay.
+    private(set) var crimeCellsAreOffline = false
 
     /// Increments per search so a stale task can tell it has been
     /// superseded and leave the newer one's state alone.
@@ -115,12 +122,16 @@ final class PlannerViewModel {
         client: RoutingClient,
         location: LocationService,
         settings: AppSettings,
-        places: PlaceStore
+        places: PlaceStore,
+        connectivity: ConnectivityMonitor,
+        offline: OfflineCrimeStore
     ) {
         self.client = client
         self.location = location
         self.settings = settings
         self.places = places
+        self.connectivity = connectivity
+        self.offline = offline
     }
 
     /// Starred places first, then recents — what the picker shows before any
@@ -308,6 +319,7 @@ final class PlannerViewModel {
                 return
             } catch {
                 guard !Task.isCancelled, generation == searchGeneration else { return }
+                connectivity.record(error)
                 searchResults = []
                 // Shown inline under the field rather than as an alert: an
                 // alert per keystroke while the server is down is unusable.
@@ -358,6 +370,7 @@ final class PlannerViewModel {
                 crimeWindowDays: settings.crimeWindow.rawValue
             )
 
+            connectivity.recordSuccess()
             itineraries = response.itineraries
             notices = response.notices
             isNight = response.isNight
@@ -377,6 +390,7 @@ final class PlannerViewModel {
                 + "point manually."
         } catch {
             phase = .idle
+            connectivity.record(error)
             errorMessage = Self.message(for: error)
         }
     }
@@ -461,14 +475,7 @@ final class PlannerViewModel {
             }
 
             if settings.showCrimeGrid {
-                if let response = try? await client.crimeGrid(
-                    in: bounds,
-                    nightOnly: settings.crimeGridNightOnly,
-                    windowDays: settings.crimeWindow.rawValue
-                ), !Task.isCancelled {
-                    crimeCells = response.cells
-                    crimeCellRadius = response.radius
-                }
+                await loadCrimeGrid(in: bounds)
             } else {
                 crimeCells = []
                 selectedCell = nil
@@ -488,6 +495,50 @@ final class PlannerViewModel {
         }
     }
 
+    /// The crime grid, from the server if it is reachable and from the
+    /// downloaded pack if it is not.
+    ///
+    /// The order matters and is deliberate: the server is always tried first,
+    /// even when the last request failed. Downloaded data goes stale as
+    /// incidents are reported, and preferring it because connectivity was bad
+    /// a minute ago would show week-old data to someone back on Wi-Fi.
+    private func loadCrimeGrid(in bounds: MapBounds) async {
+        do {
+            let response = try await client.crimeGrid(
+                in: bounds,
+                nightOnly: settings.crimeGridNightOnly,
+                windowDays: settings.crimeWindow.rawValue
+            )
+            guard !Task.isCancelled else { return }
+            crimeCells = response.cells
+            crimeCellRadius = response.radius
+            crimeCellsAreOffline = false
+            connectivity.recordSuccess()
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            connectivity.record(error)
+        }
+
+        // Server unreachable. Fall back only if there is something stored —
+        // and say so, rather than letting an old overlay pass for a live one.
+        guard let city = settings.citySlug,
+              let fallback = offline.cells(
+                  city: city,
+                  in: bounds,
+                  windowDays: settings.crimeWindow.rawValue
+              )
+        else {
+            crimeCells = []
+            crimeCellsAreOffline = false
+            return
+        }
+
+        crimeCells = fallback.cells
+        crimeCellRadius = fallback.radius
+        crimeCellsAreOffline = true
+    }
+
     /// Drop everything drawn for the previous city.
     func clearOverlays() {
         overlayTask?.cancel()
@@ -496,6 +547,7 @@ final class PlannerViewModel {
         crimeCells = []
         transitStops = []
         transitStopsTruncated = false
+        crimeCellsAreOffline = false
         selectedCell = nil
         selectedStop = nil
     }
