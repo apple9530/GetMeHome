@@ -1,4 +1,4 @@
-.PHONY: help install test lint graph graph-refresh gtfs probe serve docker clean \
+.PHONY: help install test lint graph graph-refresh gtfs probe inspect serve docker clean \
         data-manifest deploy-data deploy-fly
 
 PY ?= python3
@@ -20,6 +20,7 @@ help:
 	@echo "  make graph-refresh rebuild, re-downloading streetlights and crime"
 	@echo ""
 	@echo "  make probe         show what CITY's data feeds actually publish"
+	@echo "  make inspect       explain CITY's lighting coverage and data age"
 	@echo ""
 	@echo "  Set CITY=nyc on any of the above. e.g. make graph CITY=nyc"
 	@echo "  make serve         run the API on :8000"
@@ -50,6 +51,12 @@ gtfs:
 # city genuinely has no streetlights or no recent crime.
 probe:
 	$(PY) -m getmehome.ingest.probe --city $(CITY)
+
+# Reads a graph that is already built. Answers the question the build summary
+# compresses away: is `median lighting score: 0.0` a missing inventory, or a
+# graph that covers more ground than the inventory does.
+inspect:
+	$(PY) -m getmehome.graph.inspect --city $(CITY)
 
 graph:
 	$(PY) -m getmehome.graph.build --city $(CITY)
