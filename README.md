@@ -626,12 +626,11 @@ reasonable cadence; nothing does it for you.
 |---|---|
 | `POST /route` | Plan itineraries. Body takes origin, destination, modes, `avoidCameras`, optional `departAt`, `forceNight` and `crimeWindowDays`. |
 | `GET /cameras` | Flock/ALPR cameras in a bbox, for the overlay. |
-| `GET /crime/grid` | Incidents binned into hexagons over a bbox. Takes `windowDays` and `nightOnly`. |
-| `GET /crime/pack` | The whole city's grid at every window, for offline use. Cached and ETagged. |
+| `GET /crime/grid` | Incidents binned into hexagons over a bbox. Takes `windowDays` and `nightOnly`; reports how many incidents the city holds and the date of the newest, so an empty grid can explain itself. |
 | `GET /transit/stops` | Metro and bus stops in a bbox, capped and reporting whether it capped. |
 | `GET /transit/stop/{id}/board` | The next departures from a stop, with live predictions folded in. |
 | `GET /transit/trip/{pattern}/{trip}` | A vehicle's whole journey: every call, its time, and where it is now. |
-| `GET /geocode` · `GET /reverse` | Fuzzy place search over the local OSM index, topped up by Nominatim. |
+| `GET /geocode` · `GET /reverse` | Fuzzy place search over the local OSM index, topped up by Nominatim. Both take a city and answer only within it. |
 | `POST /share` | Begin sharing a walk. Returns a watch-only link and the walker's write key. |
 | `POST /share/{token}/update` · `/end` | Move the dot, or end the share. Needs the write key. |
 | `GET /share/{token}` · `GET /s/{token}` | What a recipient sees, as JSON and as a page. |
@@ -719,68 +718,31 @@ of this existed. It must never turn a working timetable into an error page.
 
 ---
 
-## Working without a server
+## When the server cannot be reached
 
-The person this app is for is out at night, possibly somewhere with no signal.
-So the crime overlay is downloadable, and the app is explicit about when it is
-using downloaded data.
-
-### What gets downloaded
-
-**Finished hexagons, not incidents.** DC holds well over a hundred thousand
-incidents over three years and New York several times that. Shipping those
-would mean a large download and re-implementing severity weighting, Gaussian
-binning and hex rounding in Swift — three chances to disagree with the server
-and produce an overlay that is subtly not the one the routing uses. Instead the
-server bins the whole city once per (window, radius) pair and ships the result,
-so the offline overlay *is* the online one at the same radius.
-
-Two things keep it small:
-
-- **Only the coarser ladder rungs.** Halving the radius quadruples the cell
-  count, and the fine levels only appear when zoomed into a few blocks — the
-  view someone with no signal is least likely to need. 375 m and up is baked;
-  the app rounds up to the nearest baked level and says so.
-- **Centres, not corners.** Twelve floats per cell is several times the rest of
-  the record. The pack carries the city's projection origin and the client
-  derives the six corners — the same arithmetic, moved to where it is free.
-
-Night-only is deliberately not baked: it would double the file for one toggle,
-so the app disables it while offline rather than silently showing the wrong
-thing.
-
-Offered on the city picker, because that is where someone is deliberately
-setting the app up and the moment to download a few megabytes is while you
-still have a connection. The button says *offline crime data*, not "offline
-maps": routing needs the whole graph, the search index and the timetable, which
-is a different order of size and a promise this cannot keep.
-
-### Knowing the server is gone
+Everything the app shows comes from the backend — the safety scores, the search
+index, the timetable and the crime grid — so losing the connection is a state
+worth naming rather than a set of features that quietly stop working.
 
 Connectivity is judged by **real requests, not by the radio**. A phone can have
-four bars and still not reach a backend on someone's laptop, and `NWPathMonitor`
-would call that online. Anything that fails as unreachable marks the app
-offline; a `/health` poll every fifteen seconds brings it back.
+four bars and still not reach a backend on someone's laptop, and
+`NWPathMonitor` would call that online. Anything that fails as unreachable
+marks the app offline; a `/health` poll every fifteen seconds brings it back.
 
 Only `.unreachable` counts. A 404 or a 503 means the server *answered* — the
 connection is fine and something else is wrong, and telling someone to check
 their Wi-Fi for that wastes their time.
 
 While it is down, a banner sits at the top of the map for as long as the
-condition lasts — this is a state, not an event — saying what still works
-rather than only what does not, with a manual retry beside the automatic one.
+condition lasts — this is a state, not an event — with a manual retry beside
+the automatic one.
 
-### Downloaded data is a fallback, never a cache
-
-The server is tried **first, every time**, even immediately after a failure.
-Downloaded cells go stale as incidents are reported, and preferring them
-because connectivity was bad a minute ago would mean showing week-old data to
-someone back on Wi-Fi. The fallback only runs once a request has actually
-failed.
-
-And when it does run, the app says so: the crime cell sheet is labelled
-*downloaded data* in orange. An overlay that is silently a week old is worse
-than no overlay.
+There was briefly a downloadable crime pack, so the grid could be drawn with no
+server. It was removed. Two reasons, and the second is the real one: a safety
+overlay that is silently weeks old is worse than an honest blank, and routing
+needs a connection anyway — so an offline crime map was painting colour over a
+journey the app could not plan. Any pack a previous build left in Application
+Support is deleted on the next launch.
 
 ---
 
@@ -950,13 +912,16 @@ backend/
     geo.py               projection, polyline maths
     places.py            fuzzy place search index
     daylight.py          solar elevation
-    graph/               graph model + build pipeline
-    ingest/              OSM, ArcGIS, GTFS readers
+    cities.py            the city registry: extents, feeds, vocabularies
+    sharing.py           live ETA links
+    transit_board.py     departure boards and vehicle tracking
+    graph/               graph model, build pipeline, build inspector
+    ingest/              OSM, ArcGIS, Socrata, GTFS readers + feed probe
     safety/              lighting, crime, cameras, hex grid, scoring
     routing/             A*, alternatives, RAPTOR, multimodal
     nav/                 turn-by-turn instructions
     api/                 FastAPI app
-  tests/                 110 tests, no data build required
+  tests/                 285 tests, no data build required
 ios/
   project.yml            XcodeGen spec
   GetMeHome/

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -11,7 +9,7 @@ from datetime import UTC, datetime
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 
 from ..cities import CITIES, DEFAULT_CITY, City, get_city
 from ..config import (
@@ -19,7 +17,6 @@ from ..config import (
     GEOCODER_USER_AGENT,
     PUBLIC_BASE_URL,
 )
-from ..crime_pack import build_pack
 from ..daylight import is_night as compute_is_night
 from ..geo import simplify_polyline
 from ..live.wmata import station_code
@@ -552,65 +549,6 @@ def crime_grid(
         heldIncidents=state.crime.count,
         latestIncident=latest.date().isoformat() if latest else "",
     )
-
-
-@app.get("/crime/pack")
-def crime_pack(city: str | None = Query(None)) -> Response:
-    """The whole city's crime grid, for use with no server.
-
-    Built once and cached in memory: it is sixteen passes over the incident
-    set and only changes when the graph is rebuilt. Served as pre-encoded
-    JSON so a repeat download does not re-serialise tens of thousands of
-    cells.
-
-    An ETag lets a phone that already has the current pack skip the transfer
-    entirely — a re-download after a rebuild is the only one that should cost
-    anything.
-    """
-    state = _require_state(city)
-    if state.crime is None or state.crime.count == 0:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"No crime points for {state.city.name}. Rebuild with: "
-                f"python -m getmehome.graph.build --city {state.city.slug}"
-            ),
-        )
-
-    payload, etag = _cached_pack(state)
-    return Response(
-        content=payload,
-        media_type="application/json",
-        headers={
-            "ETag": etag,
-            # A pack is only replaced by a rebuild, so a day is safe and saves
-            # a re-download for anyone who opens the app repeatedly.
-            "Cache-Control": "public, max-age=86400",
-            "X-Pack-Cells": str(_pack_cache[state.city.slug][2]),
-        },
-    )
-
-
-# slug -> (encoded json, etag, cell count). Bounded by the number of cities.
-_pack_cache: dict[str, tuple[bytes, str, int]] = {}
-
-
-def _cached_pack(state) -> tuple[bytes, str]:
-    slug = state.city.slug
-    cached = _pack_cache.get(slug)
-    if cached is not None:
-        return cached[0], cached[1]
-
-    log.info("building crime pack for %s", slug)
-    pack = build_pack(state.crime, state.city)
-    encoded = json.dumps(pack, separators=(",", ":")).encode()
-    etag = f'W/"{hashlib.sha256(encoded).hexdigest()[:16]}"'
-    _pack_cache[slug] = (encoded, etag, pack["totalCells"])
-    log.info(
-        "%s crime pack: %d cells, %.1f MB",
-        slug, pack["totalCells"], len(encoded) / 1e6,
-    )
-    return encoded, etag
 
 
 @app.get("/geocode", response_model=GeocodeResponse)

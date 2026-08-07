@@ -76,11 +76,7 @@ struct RouteMapView: View {
                     .presentationDetents([.height(300)])
             }
             .sheet(item: selectedCellBinding) { cell in
-                CrimeCellSheet(
-                    cell: cell,
-                    radius: planner.crimeCellRadius,
-                    isOffline: planner.crimeCellsAreOffline
-                )
+                CrimeCellSheet(cell: cell, radius: planner.crimeCellRadius)
                     .presentationDetents([.height(420), .medium])
             }
             .sheet(item: selectedStopBinding) { stop in
@@ -107,9 +103,8 @@ struct RouteMapView: View {
     /// Shown for as long as the server is unreachable.
     ///
     /// Persistent rather than a toast: this is a state, not an event, and
-    /// everything the app can do is different while it lasts. It says what is
-    /// still working — the downloaded crime grid, if there is one — because
-    /// "no connection" on its own reads as "nothing works".
+    /// nothing the app does works without a connection — the safety scores,
+    /// the search index and the timetable all live on the server.
     private var offlineBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: "wifi.slash")
@@ -150,13 +145,9 @@ struct RouteMapView: View {
     }
 
     private var offlineDetail: String {
-        if planner.crimeCellsAreOffline {
-            return "Showing downloaded crime data. Retrying every 15 seconds."
-        }
-        if connectivity.isRetrying {
-            return "Reconnecting…"
-        }
-        return "Retrying every 15 seconds. Routing needs a connection."
+        connectivity.isRetrying
+            ? "Reconnecting…"
+            : "Retrying every 15 seconds."
     }
 
     /// Why the crime overlay is drawing nothing.
@@ -514,9 +505,6 @@ struct CrimeCellSheet: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.dismiss) private var dismiss
 
-    /// Set when this cell came from a downloaded pack rather than the server.
-    var isOffline: Bool = false
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
@@ -529,10 +517,9 @@ struct CrimeCellSheet: View {
                     Text(
                         "Within about \(Int(radius)) m · last "
                             + settings.crimeWindow.label
-                            + (isOffline ? " · downloaded data" : "")
                     )
                     .font(.caption)
-                    .foregroundStyle(isOffline ? .orange : .secondary)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {

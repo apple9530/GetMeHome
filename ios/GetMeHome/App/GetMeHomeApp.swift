@@ -10,7 +10,6 @@ struct GetMeHomeApp: App {
     @State private var client: RoutingClient
     @State private var places: PlaceStore
     @State private var connectivity: ConnectivityMonitor
-    @State private var offline: OfflineCrimeStore
 
     init() {
         let settings = AppSettings()
@@ -18,22 +17,19 @@ struct GetMeHomeApp: App {
         let client = RoutingClient(baseURL: settings.serverURL)
         let places = PlaceStore(city: settings.citySlug, bounds: settings.cityBBox)
         let connectivity = ConnectivityMonitor(client: client)
-        let offline = OfflineCrimeStore()
 
         _settings = State(initialValue: settings)
         _location = State(initialValue: location)
         _client = State(initialValue: client)
         _places = State(initialValue: places)
         _connectivity = State(initialValue: connectivity)
-        _offline = State(initialValue: offline)
         _planner = State(
             initialValue: PlannerViewModel(
                 client: client,
                 location: location,
                 settings: settings,
                 places: places,
-                connectivity: connectivity,
-                offline: offline
+                connectivity: connectivity
             )
         )
     }
@@ -47,16 +43,13 @@ struct GetMeHomeApp: App {
                 .environment(planner)
                 .environment(places)
                 .environment(connectivity)
-                .environment(offline)
                 .environment(\.routingClient, client)
                 .task {
                     location.requestAuthorization()
                     location.startUpdating()
-                    // The client has to know the city before any request goes
-                    // out, including the first overlay fetch on appear.
-                    if let city = settings.citySlug {
-                        offline.loadIfPresent(city: city)
-                    }
+                    // Reclaim whatever the downloaded-crime-data feature left
+                    // on disk before it was removed.
+                    StaleData.purge()
                     // One probe at launch, so the first thing the app does is
                     // not a route request that fails.
                     connectivity.start()
@@ -67,7 +60,6 @@ struct GetMeHomeApp: App {
                     // The bounds go with the slug so the store can also drop
                     // anything a previous version filed under the wrong city.
                     places.switchTo(city: slug, bounds: settings.cityBBox)
-                    if let slug { offline.loadIfPresent(city: slug) }
                 }
                 .onChange(of: settings.cityBBox) { _, bounds in
                     // Bounds can arrive without the slug changing — the

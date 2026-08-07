@@ -16,7 +16,6 @@ struct CityPickerView: View {
     var onCancel: (() -> Void)?
 
     @Environment(AppSettings.self) private var settings
-    @Environment(OfflineCrimeStore.self) private var offline
     @Environment(\.routingClient) private var client
 
     @State private var cities: [CityInfo] = []
@@ -55,9 +54,6 @@ struct CityPickerView: View {
             Section {
                 ForEach(cities) { city in
                     cityRow(city)
-                    if city.available {
-                        offlineRow(city)
-                    }
                 }
             } footer: {
                 Text(
@@ -126,102 +122,6 @@ struct CityPickerView: View {
         .disabled(!city.available)
     }
 
-    // MARK: - Offline data
-
-    /// Download the crime grid for use with no server.
-    ///
-    /// Offered here because this is the one screen where someone is
-    /// deliberately setting the app up, and because the moment to download a
-    /// few megabytes is while you still have a connection — not when you have
-    /// already lost it and want the map.
-    ///
-    /// Scoped to the crime overlay on purpose. Routing needs the whole graph,
-    /// the search index and the timetable, which is a different order of size
-    /// and a promise this cannot keep; saying "offline crime data" is
-    /// narrower and true.
-    @ViewBuilder
-    private func offlineRow(_ city: CityInfo) -> some View {
-        let status = offline.status(for: city.slug)
-
-        HStack(spacing: 12) {
-            Image(systemName: iconName(for: status))
-                .font(.footnote)
-                .frame(width: 36)
-                .foregroundStyle(tint(for: status))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Offline crime data")
-                    .font(.subheadline)
-                Text(caption(for: status))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 4)
-
-            switch status {
-            case .downloading:
-                ProgressView().controlSize(.small)
-            case .ready:
-                Menu {
-                    Button("Download again") { download(city) }
-                    Button("Remove", role: .destructive) {
-                        offline.remove(city: city.slug)
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .foregroundStyle(.secondary)
-                }
-            default:
-                Button("Download") { download(city) }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.borderless)
-            }
-        }
-        .padding(.leading, 8)
-        .padding(.vertical, 2)
-    }
-
-    private func download(_ city: CityInfo) {
-        Task { await offline.download(city: city.slug, from: settings.serverURL) }
-    }
-
-    private func iconName(for status: OfflineCrimeStore.Status) -> String {
-        switch status {
-        case .ready: "checkmark.circle.fill"
-        case .downloading: "arrow.down.circle"
-        case .failed: "exclamationmark.triangle.fill"
-        case .absent: "arrow.down.circle"
-        }
-    }
-
-    private func tint(for status: OfflineCrimeStore.Status) -> Color {
-        switch status {
-        case .ready: .green
-        case .failed: .orange
-        default: .secondary
-        }
-    }
-
-    private func caption(for status: OfflineCrimeStore.Status) -> String {
-        switch status {
-        case .absent:
-            return "See the crime grid when there's no connection. "
-                + "Routing and search still need one."
-        case let .downloading(progress):
-            return progress > 0
-                ? "Downloading… \(Int(progress * 100))%"
-                : "Downloading…"
-        case let .ready(cells, downloaded, finestRadius):
-            return "\(cells.formatted()) areas, saved "
-                + downloaded.formatted(date: .abbreviated, time: .shortened)
-                + ". Detail down to about \(Int(finestRadius)) m."
-        case let .failed(reason):
-            return "Couldn't download: \(reason)"
-        }
-    }
-
     // MARK: - When the server cannot be reached
 
     /// The one screen where an unreachable server is fatal rather than
@@ -273,13 +173,7 @@ struct CityPickerView: View {
         defer { isLoading = false }
 
         do {
-            let response = try await client.cities()
-            cities = response.cities
-            // Report what is already downloaded, so the row does not offer to
-            // fetch a pack the phone already has.
-            for city in cities {
-                offline.loadIfPresent(city: city.slug)
-            }
+            cities = try await client.cities().cities
             error = nil
         } catch {
             cities = []

@@ -99,12 +99,6 @@ final class PlannerViewModel {
     private let location: LocationService
     private let settings: AppSettings
     private let connectivity: ConnectivityMonitor
-    private let offline: OfflineCrimeStore
-
-    /// True when the crime grid on screen came from downloaded data rather
-    /// than the server. Surfaced so the map can say so — an overlay that is
-    /// silently a week old is worse than no overlay.
-    private(set) var crimeCellsAreOffline = false
 
     /// Why the crime overlay is showing nothing, when it is showing nothing.
     ///
@@ -130,15 +124,13 @@ final class PlannerViewModel {
         location: LocationService,
         settings: AppSettings,
         places: PlaceStore,
-        connectivity: ConnectivityMonitor,
-        offline: OfflineCrimeStore
+        connectivity: ConnectivityMonitor
     ) {
         self.client = client
         self.location = location
         self.settings = settings
         self.places = places
         self.connectivity = connectivity
-        self.offline = offline
     }
 
     /// Starred places first, then recents — what the picker shows before any
@@ -528,13 +520,13 @@ final class PlannerViewModel {
         }
     }
 
-    /// The crime grid, from the server if it is reachable and from the
-    /// downloaded pack if it is not.
+    /// The crime grid for the viewport.
     ///
-    /// The order matters and is deliberate: the server is always tried first,
-    /// even when the last request failed. Downloaded data goes stale as
-    /// incidents are reported, and preferring it because connectivity was bad
-    /// a minute ago would show week-old data to someone back on Wi-Fi.
+    /// Server only. There used to be a downloaded fallback here, drawn when
+    /// the server could not be reached; it was removed because a safety
+    /// overlay that is silently weeks old is worse than an honest blank, and
+    /// because routing needs a connection anyway — so an offline crime map was
+    /// showing colour for a journey the app could not plan.
     private func loadCrimeGrid(in bounds: MapBounds) async {
         let askedFor = settings.citySlug
         do {
@@ -547,38 +539,18 @@ final class PlannerViewModel {
             guard !Task.isCancelled, askedFor == settings.citySlug else { return }
             crimeCells = response.cells
             crimeCellRadius = response.radius
-            crimeCellsAreOffline = false
             crimeGridNotice = Self.notice(for: response, window: settings.crimeWindow)
             connectivity.recordSuccess()
-            return
         } catch {
             guard !Task.isCancelled else { return }
             connectivity.record(error)
-            // An overlay that fails has to say so. It used to fall straight
-            // through to the offline store and, when nothing was downloaded,
-            // set an empty array — so a 503 from a city the server had not
-            // finished building looked exactly like an area with no crime.
+            crimeCells = []
+            // An overlay that fails has to say so. It used to fall through to
+            // the offline store and, when nothing was downloaded, set an empty
+            // array — so a 503 from a city the server had not finished
+            // building looked exactly like an area with no crime.
             crimeGridNotice = Self.message(for: error)
         }
-
-        // Server unreachable. Fall back only if there is something stored —
-        // and say so, rather than letting an old overlay pass for a live one.
-        guard let city = settings.citySlug,
-              let fallback = offline.cells(
-                  city: city,
-                  in: bounds,
-                  windowDays: settings.crimeWindow.rawValue
-              )
-        else {
-            crimeCells = []
-            crimeCellsAreOffline = false
-            return
-        }
-
-        crimeCells = fallback.cells
-        crimeCellRadius = fallback.radius
-        crimeCellsAreOffline = true
-        crimeGridNotice = nil
     }
 
     /// Why an empty crime grid is empty, or nil when it is not empty.
@@ -626,7 +598,6 @@ final class PlannerViewModel {
         crimeGridNotice = nil
         transitStops = []
         transitStopsTruncated = false
-        crimeCellsAreOffline = false
         selectedCell = nil
         selectedStop = nil
         // Search results belong to a city too. Leaving them meant the list

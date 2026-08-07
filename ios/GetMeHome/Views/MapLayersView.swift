@@ -10,7 +10,18 @@ import SwiftUI
 /// actually shows.
 struct MapLayersView: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(\.routingClient) private var client
     @Environment(\.dismiss) private var dismiss
+
+    /// How far behind the selected city's crime feed is, from `/meta`.
+    ///
+    /// Needed here because a lookback shorter than the lag matches nothing at
+    /// all, and picking one then looks like the overlay is broken. New York's
+    /// NYPD files land in quarterly batches: at 37 days behind, "30 days" is
+    /// guaranteed to be empty and there is no way to know that from the
+    /// picker.
+    @State private var dataAgeDays: Int?
+    @State private var latestIncident: String?
 
     var body: some View {
         @Bindable var settings = settings
@@ -59,8 +70,14 @@ struct MapLayersView: View {
                 Section {
                     Picker("Crime data from the last", selection: $settings.crimeWindow) {
                         ForEach(CrimeWindow.allCases) { window in
-                            Text(window.label).tag(window)
+                            Text(label(for: window)).tag(window)
                         }
+                    }
+                    if let notice = feedLagNotice {
+                        Label(notice, systemImage: "clock.badge.exclamationmark")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
                     Text("Crime data")
@@ -91,7 +108,40 @@ struct MapLayersView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .task {
+                guard let meta = try? await client.meta(city: settings.citySlug)
+                else { return }
+                dataAgeDays = meta.crimeDataAgeDays
+                latestIncident = meta.latestIncident
+            }
         }
+    }
+
+    // MARK: - What the feed can actually answer
+
+    /// Whether a lookback is shorter than the feed's publishing lag.
+    ///
+    /// Marked rather than disabled. It is a legitimate choice — the city may
+    /// catch up tomorrow, and a control that vanishes is more confusing than
+    /// one that explains itself.
+    private func isEmpty(_ window: CrimeWindow) -> Bool {
+        guard let dataAgeDays else { return false }
+        return dataAgeDays >= window.rawValue
+    }
+
+    private func label(for window: CrimeWindow) -> String {
+        isEmpty(window) ? "\(window.label) — no data" : window.label
+    }
+
+    private var feedLagNotice: String? {
+        guard let dataAgeDays, CrimeWindow.allCases.contains(where: isEmpty)
+        else { return nil }
+        let newest = (latestIncident?.isEmpty == false)
+            ? " Its newest report is from \(latestIncident!)."
+            : ""
+        return "This city publishes its crime data in batches and is "
+            + "\(dataAgeDays) days behind, so the shorter windows are empty."
+            + newest
     }
 
     private func layerToggle(
