@@ -444,4 +444,9 @@ def test_a_singly_escaped_id_is_accepted(api):
 
 
 def test_an_unknown_stop_is_a_404_not_a_crash(api):
-    assert api.get("/transit/stop/no-such-stop/board").status_code == 404
+    response = api.get("/transit/stop/no-such-stop/board")
+    assert response.status_code == 404
+    # The message names the city it looked in. The commonest cause of this by
+    # far is a client asking the wrong one, and a bare "no such stop" sends
+    # people hunting for a data problem that does not exist.
+    assert "Washington" in response.json()["detail"]

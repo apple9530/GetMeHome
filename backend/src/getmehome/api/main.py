@@ -891,7 +891,7 @@ def stop_board(
 
     indices = resolve_stop(network, stop_id)
     if not indices:
-        raise HTTPException(status_code=404, detail="No such stop.")
+        raise HTTPException(status_code=404, detail=_no_such_stop(state, stop_id))
 
     now = _local_now(state.city)
     now_s = _seconds_since_midnight(now)
@@ -934,6 +934,31 @@ def stop_board(
         live=any(d.is_live for d in scheduled),
         liveNote=live_note,
     )
+
+
+def _no_such_stop(state, stop_id: str) -> str:
+    """Why a stop id did not resolve.
+
+    Almost always the client asked the wrong city — a New York stop id looked
+    up in Washington's timetable is not there, and "no such stop" sends someone
+    hunting for a data problem that does not exist. If another loaded city has
+    it, say which.
+    """
+    for other in states().available():
+        if other.slug == state.city.slug:
+            continue
+        if not states().is_loaded(other):
+            # Loading a whole city to improve an error message is not a trade
+            # worth making.
+            continue
+        loaded = states().get(other.slug)
+        if loaded.transit and resolve_stop(loaded.transit.network, stop_id):
+            return (
+                f"Stop {stop_id!r} is in {other.name}, but the request asked "
+                f"for {state.city.name}. Send ?city={other.slug}."
+            )
+
+    return f"No stop {stop_id!r} in {state.city.name}."
 
 
 def _predictions_for(state, network, indices: list[int], mode: str) -> list:

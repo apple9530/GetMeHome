@@ -74,6 +74,10 @@ final class NavigationViewModel {
     let destinationName: String
     private let modes: [String]
     private let avoidCameras: Bool
+    /// Rerouting has to stay in the city the walk started in. Without it a
+    /// wrong turn in New York would be re-planned against Washington's graph,
+    /// which fails at the snap and looks like the route simply vanishing.
+    private let city: String?
 
     /// Nil until the first fix, and reset on reroute, so those searches scan
     /// the whole route instead of a window around a position on the old one.
@@ -91,6 +95,7 @@ final class NavigationViewModel {
         destinationName: String,
         modes: [String],
         avoidCameras: Bool,
+        city: String?,
         speech: SpeechService,
         client: RoutingClient
     ) {
@@ -99,6 +104,7 @@ final class NavigationViewModel {
         self.destinationName = destinationName
         self.modes = modes
         self.avoidCameras = avoidCameras
+        self.city = city
         self.speech = speech
         self.client = client
         self.share = ShareETAService(client: client)
@@ -291,7 +297,8 @@ final class NavigationViewModel {
                     to: destination,
                     destinationName: destinationName,
                     modes: modes,
-                    avoidCameras: avoidCameras
+                    avoidCameras: avoidCameras,
+                    city: city
                 )
                 guard !Task.isCancelled else { return }
 

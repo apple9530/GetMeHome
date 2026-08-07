@@ -309,7 +309,9 @@ final class PlannerViewModel {
 
             do {
                 let results = try await client.geocode(
-                    query, near: location.location?.coordinate
+                    query,
+                    near: location.location?.coordinate,
+                    city: settings.citySlug
                 )
                 guard !Task.isCancelled, generation == searchGeneration else { return }
                 searchResults = results
@@ -367,7 +369,8 @@ final class PlannerViewModel {
                 modes: settings.modes,
                 avoidCameras: settings.avoidCameras,
                 forceNight: settings.timeOfDay.forceNight,
-                crimeWindowDays: settings.crimeWindow.rawValue
+                crimeWindowDays: settings.crimeWindow.rawValue,
+                city: settings.citySlug
             )
 
             connectivity.recordSuccess()
@@ -467,7 +470,9 @@ final class PlannerViewModel {
             guard !Task.isCancelled else { return }
 
             if settings.showCameraOverlay {
-                if let response = try? await client.cameras(in: bounds), !Task.isCancelled {
+                if let response = try? await client.cameras(
+                    in: bounds, city: settings.citySlug
+                ), !Task.isCancelled {
                     cameras = response.cameras
                 }
             } else {
@@ -482,8 +487,9 @@ final class PlannerViewModel {
             }
 
             if settings.showTransitStops {
-                if let response = try? await client.transitStops(in: bounds),
-                   !Task.isCancelled {
+                if let response = try? await client.transitStops(
+                    in: bounds, city: settings.citySlug
+                ), !Task.isCancelled {
                     transitStops = response.stops
                     transitStopsTruncated = response.truncated
                 }
@@ -507,7 +513,8 @@ final class PlannerViewModel {
             let response = try await client.crimeGrid(
                 in: bounds,
                 nightOnly: settings.crimeGridNightOnly,
-                windowDays: settings.crimeWindow.rawValue
+                windowDays: settings.crimeWindow.rawValue,
+                city: settings.citySlug
             )
             guard !Task.isCancelled else { return }
             crimeCells = response.cells

@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import SwiftUI
 
 enum RoutingError: LocalizedError {
     case badURL
@@ -32,15 +33,20 @@ enum RoutingError: LocalizedError {
 }
 
 /// Talks to the GetMeHome backend.
+///
+/// **The city is an argument on every call, never state on the client.** It
+/// used to be a stored property set once by the app. Views that built their
+/// own client — Settings, the stop board, the trip view — got one with no city
+/// set and silently fell back to the server's default, so New York's Settings
+/// reported Washington's data and tapping a New York stop looked it up in
+/// Washington's timetable and answered "no such stop".
+///
+/// Making it a parameter means a client cannot be wrong about something it was
+/// never told. Only `/cities`, `/reverse` and a bare `/health` legitimately
+/// have none.
 actor RoutingClient {
     private let session: URLSession
     private var baseURL: URL
-    /// Which city's data every request applies to.
-    ///
-    /// Held here rather than passed at each call site, because forgetting it
-    /// on one endpoint would mean a map drawn from one city and routes scored
-    /// against another — with no error to notice.
-    private var city: String?
 
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -74,13 +80,9 @@ actor RoutingClient {
         baseURL = url
     }
 
-    func updateCity(_ slug: String?) {
-        city = slug
-    }
-
     func cities() async throws -> CitiesResponse {
-        // Deliberately not city-scoped: this is the call that discovers them.
-        try await get("/cities", query: [], includeCity: false)
+        // The one call with no city: it is how they are discovered.
+        try await get("/cities", query: [], city: nil)
     }
 
     // MARK: - Routing
@@ -93,7 +95,8 @@ actor RoutingClient {
         avoidCameras: Bool,
         departAt: Date? = nil,
         forceNight: Bool? = nil,
-        crimeWindowDays: Int? = nil
+        crimeWindowDays: Int? = nil,
+        city: String?
     ) async throws -> RouteResponse {
         let body = RouteRequest(
             origin: Coordinate(lat: origin.latitude, lon: origin.longitude),
@@ -111,12 +114,15 @@ actor RoutingClient {
 
     // MARK: - Overlays
 
-    func cameras(in region: MapBounds) async throws -> CameraResponse {
-        try await get("/cameras", query: region.queryItems)
+    func cameras(in region: MapBounds, city: String?) async throws -> CameraResponse {
+        try await get("/cameras", query: region.queryItems, city: city)
     }
 
     func crimeGrid(
-        in region: MapBounds, nightOnly: Bool, windowDays: Int? = nil
+        in region: MapBounds,
+        nightOnly: Bool,
+        windowDays: Int? = nil,
+        city: String?
     ) async throws -> CrimeGridResponse {
         var items = region.queryItems
         if nightOnly {
@@ -125,7 +131,7 @@ actor RoutingClient {
         if let windowDays {
             items.append(URLQueryItem(name: "windowDays", value: String(windowDays)))
         }
-        return try await get("/crime/grid", query: items)
+        return try await get("/crime/grid", query: items, city: city)
     }
 
     // MARK: - Live ETA sharing
@@ -168,21 +174,25 @@ actor RoutingClient {
     // MARK: - Transit
 
     func transitStops(
-        in region: MapBounds, railOnly: Bool = false
+        in region: MapBounds, railOnly: Bool = false, city: String?
     ) async throws -> TransitStopsResponse {
         var items = region.queryItems
         if railOnly {
             items.append(URLQueryItem(name: "railOnly", value: "true"))
         }
-        return try await get("/transit/stops", query: items)
+        return try await get("/transit/stops", query: items, city: city)
     }
 
-    func stopBoard(_ stopId: String) async throws -> StopBoard {
-        try await get("/transit/stop/\(encoded(stopId))/board", query: [])
+    func stopBoard(_ stopId: String, city: String?) async throws -> StopBoard {
+        try await get("/transit/stop/\(encoded(stopId))/board", query: [], city: city)
     }
 
     func tripDetail(
-        patternId: Int, tripId: String, fromStop: String = "", vehicleId: String = ""
+        patternId: Int,
+        tripId: String,
+        fromStop: String = "",
+        vehicleId: String = "",
+        city: String?
     ) async throws -> TripDetail {
         var items: [URLQueryItem] = []
         if !fromStop.isEmpty {
@@ -194,7 +204,7 @@ actor RoutingClient {
             items.append(URLQueryItem(name: "vehicleId", value: vehicleId))
         }
         return try await get(
-            "/transit/trip/\(patternId)/\(encoded(tripId))", query: items
+            "/transit/trip/\(patternId)/\(encoded(tripId))", query: items, city: city
         )
     }
 
@@ -221,7 +231,7 @@ actor RoutingClient {
     // MARK: - Places
 
     func geocode(
-        _ query: String, near: CLLocationCoordinate2D? = nil
+        _ query: String, near: CLLocationCoordinate2D? = nil, city: String?
     ) async throws -> [GeocodeResult] {
         var items = [URLQueryItem(name: "q", value: query)]
         if let near {
@@ -230,7 +240,9 @@ actor RoutingClient {
             items.append(URLQueryItem(name: "lat", value: String(near.latitude)))
             items.append(URLQueryItem(name: "lon", value: String(near.longitude)))
         }
-        let response: GeocodeResponse = try await get("/geocode", query: items)
+        let response: GeocodeResponse = try await get(
+            "/geocode", query: items, city: city
+        )
         return response.results
     }
 
@@ -240,17 +252,18 @@ actor RoutingClient {
             query: [
                 URLQueryItem(name: "lat", value: String(coordinate.latitude)),
                 URLQueryItem(name: "lon", value: String(coordinate.longitude)),
-            ]
+            ],
+            city: nil
         )
         return response.results.first
     }
 
-    func meta() async throws -> ServerMeta {
-        try await get("/meta", query: [])
+    func meta(city: String?) async throws -> ServerMeta {
+        try await get("/meta", query: [], city: city)
     }
 
-    func health() async throws -> ServerHealth {
-        try await get("/health", query: [])
+    func health(city: String? = nil) async throws -> ServerHealth {
+        try await get("/health", query: [], city: city)
     }
 
     // MARK: - Transport
@@ -276,10 +289,10 @@ actor RoutingClient {
     }
 
     private func get<T: Decodable>(
-        _ path: String, query: [URLQueryItem], includeCity: Bool = true
+        _ path: String, query: [URLQueryItem], city: String?
     ) async throws -> T {
         var items = query
-        if includeCity, let city {
+        if let city {
             items.append(URLQueryItem(name: "city", value: city))
         }
         return try await perform(URLRequest(url: try makeURL(path, query: items)))
@@ -386,5 +399,29 @@ struct MapBounds: Equatable {
             || abs(minLon - other.minLon) > threshold
             || abs(maxLat - other.maxLat) > threshold
             || abs(maxLon - other.maxLon) > threshold
+    }
+}
+
+// MARK: - Sharing one client
+
+private struct RoutingClientKey: EnvironmentKey {
+    /// Never used in practice — the app always injects one. Present because
+    /// `EnvironmentKey` requires a default, and a client pointed at localhost
+    /// fails visibly rather than crashing.
+    static let defaultValue = RoutingClient(
+        baseURL: URL(string: AppSettings.localServer)!
+    )
+}
+
+extension EnvironmentValues {
+    /// The app's single client.
+    ///
+    /// Shared rather than constructed per view, so every request goes through
+    /// one URLSession with one base URL. Views used to make their own, which
+    /// is how several of them ended up talking to a different server than the
+    /// one Settings had been pointed at.
+    var routingClient: RoutingClient {
+        get { self[RoutingClientKey.self] }
+        set { self[RoutingClientKey.self] = newValue }
     }
 }

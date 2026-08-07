@@ -17,6 +17,7 @@ struct TransitStopView: View {
     let stop: TransitStop
 
     @Environment(AppSettings.self) private var settings
+    @Environment(\.routingClient) private var client
     @Environment(\.dismiss) private var dismiss
 
     @State private var board: StopBoard?
@@ -183,9 +184,8 @@ struct TransitStopView: View {
     }
 
     private func load() async {
-        let client = RoutingClient(baseURL: settings.serverURL)
         do {
-            let fetched = try await client.stopBoard(stop.id)
+            let fetched = try await client.stopBoard(stop.id, city: settings.citySlug)
             guard !Task.isCancelled else { return }
             board = fetched
             error = nil
@@ -215,6 +215,7 @@ struct TransitTripView: View {
     let fromStopId: String
 
     @Environment(AppSettings.self) private var settings
+    @Environment(\.routingClient) private var client
     @Environment(\.dismiss) private var dismiss
 
     @State private var detail: TripDetail?
@@ -396,13 +397,13 @@ struct TransitTripView: View {
     }
 
     private func load() async {
-        let client = RoutingClient(baseURL: settings.serverURL)
         do {
             let fetched = try await client.tripDetail(
                 patternId: departure.patternId,
                 tripId: departure.tripId,
                 fromStop: fromStopId,
-                vehicleId: departure.vehicleId
+                vehicleId: departure.vehicleId,
+                city: settings.citySlug
             )
             guard !Task.isCancelled else { return }
             detail = fetched

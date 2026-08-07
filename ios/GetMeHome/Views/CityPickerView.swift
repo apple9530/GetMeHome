@@ -17,6 +17,7 @@ struct CityPickerView: View {
 
     @Environment(AppSettings.self) private var settings
     @Environment(OfflineCrimeStore.self) private var offline
+    @Environment(\.routingClient) private var client
 
     @State private var cities: [CityInfo] = []
     @State private var error: String?
@@ -271,7 +272,6 @@ struct CityPickerView: View {
         isLoading = true
         defer { isLoading = false }
 
-        let client = RoutingClient(baseURL: settings.serverURL)
         do {
             let response = try await client.cities()
             cities = response.cities

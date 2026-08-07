@@ -388,6 +388,7 @@ struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(PlannerViewModel.self) private var planner
     @Environment(PlaceStore.self) private var places
+    @Environment(\.routingClient) private var client
     @Environment(\.dismiss) private var dismiss
     @State private var meta: ServerMeta?
     @State private var confirmClearHistory = false
@@ -569,8 +570,7 @@ struct SettingsView: View {
                 }
             }
             .task {
-                let client = RoutingClient(baseURL: settings.serverURL)
-                meta = try? await client.meta()
+                meta = try? await client.meta(city: settings.citySlug)
             }
             .confirmationDialog(
                 "Clear search history?",
@@ -627,9 +627,8 @@ struct SettingsView: View {
         healthError = nil
         defer { isTesting = false }
 
-        let client = RoutingClient(baseURL: settings.serverURL)
         do {
-            health = try await client.health()
+            health = try await client.health(city: settings.citySlug)
         } catch {
             healthError = (error as? RoutingError)?.errorDescription
                 ?? error.localizedDescription

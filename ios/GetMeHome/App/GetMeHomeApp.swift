@@ -48,12 +48,12 @@ struct GetMeHomeApp: App {
                 .environment(places)
                 .environment(connectivity)
                 .environment(offline)
+                .environment(\.routingClient, client)
                 .task {
                     location.requestAuthorization()
                     location.startUpdating()
                     // The client has to know the city before any request goes
                     // out, including the first overlay fetch on appear.
-                    await client.updateCity(settings.citySlug)
                     if let city = settings.citySlug {
                         offline.loadIfPresent(city: city)
                     }
@@ -62,7 +62,6 @@ struct GetMeHomeApp: App {
                     connectivity.start()
                 }
                 .onChange(of: settings.citySlug) { _, slug in
-                    Task { await client.updateCity(slug) }
                     // Recents and starred places are per city: a Washington
                     // address is not a suggestion worth offering in New York.
                     places.switchTo(city: slug)
@@ -256,6 +255,7 @@ struct RootView: View {
             destinationName: planner.destinationName,
             modes: settings.modes,
             avoidCameras: settings.avoidCameras,
+            city: settings.citySlug,
             speech: speech,
             client: client
         )
