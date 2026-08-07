@@ -135,6 +135,45 @@ timestamp, so a shift is derived from the hour — using MPD's own tour
 boundaries, which is what keeps the two cities' night surfaces comparable
 rather than one being a police tour and the other an arbitrary cut.
 
+**Where it happened.** NYPD publishes `prem_typ_desc`; MPD publishes nothing
+equivalent. This turned out to matter more than expected. A large share of New
+York's reported sexual offences and assaults occur inside dwellings, and a
+domestic assault on the eleventh floor says close to nothing about the risk of
+walking past the building. Counting it does two wrong things at once: it
+inflates residential streets, and it maps the location of *housing* rather than
+of street crime.
+
+So New York's incidents are weighted by premises, in three bands:
+
+| | Weight | |
+|---|---|---|
+| Outdoor | 1.0 | street, park, parking lot, highway |
+| Semi-public | 0.55 | bar, shop, restaurant, subway interior |
+| Private dwelling | **0.0** | residence, apartment, public housing |
+| Unknown | 1.0 | no premises recorded |
+
+Zero for dwellings is an exclusion rather than a very small number, because the
+question the model answers is "what is the risk of walking down this street"
+and a crime inside someone's home is not evidence about that. Semi-public sits
+between: a robbery outside a bar at 1am is squarely pedestrian-relevant even
+though the report names the bar.
+
+Unknown counts in full, which is what makes Washington's feed unaffected — it
+has no premises column, so its policy is the identity and nothing changes.
+Because "unknown" is generous, a *wrong column name* would silently disable the
+whole filter, so the build fails loudly if a city that declares a premises
+policy sees more than half its incidents come back without one.
+
+The related fix: NYPD's `SEX CRIMES` is a much broader bucket than its name
+suggests — forcible touching sits in it alongside far graver offences, and it is
+several times the size of the rape category. Weighting it near homicide, as the
+first pass did, let a handful of reports dominate every cell they appeared in
+and produced sexual-offence shares that did not survive a sense check against
+DC. It is now weighted below rape while staying serious and staying in the
+sexual category. Both codes carry the same display name and the map's breakdown
+groups rows by label, so they appear as one line rather than as two adjacent
+rows reading "Sexual offense".
+
 ### Data sources
 
 | | Washington | New York |

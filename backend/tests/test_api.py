@@ -446,3 +446,76 @@ def test_health_reports_which_cities_are_built(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert body["city"] == "dc"
+
+
+def test_search_never_returns_a_result_outside_the_selected_city(client, monkeypatch):
+    """The complaint that prompted this: DC addresses showing up in New York.
+
+    Whatever the source — a stale local index, an external geocoder ignoring
+    its viewbox — a result the user cannot route to is not a search result.
+    """
+    from getmehome.api import main
+    from getmehome.api.schemas import GeocodeResult
+
+    monkeypatch.setattr(
+        main,
+        "_nominatim",
+        lambda q, limit, city: [
+            GeocodeResult(
+                name="Union Station",
+                address="Washington, DC",
+                lat=38.8977,
+                lon=-77.0064,
+            ),
+            GeocodeResult(
+                name="Grand Central Terminal",
+                address="New York, NY",
+                lat=40.7527,
+                lon=-73.9772,
+            ),
+        ],
+    )
+
+    # Asking as New York must drop the Washington one, even though the local
+    # index for NYC is not built here and everything comes from the geocoder.
+    body = main.geocode(q="union station", limit=12, lat=None, lon=None, city="nyc")
+    names = [r.name for r in body.results]
+    assert "Grand Central Terminal" in names
+    assert "Union Station" not in names
+
+
+def test_the_same_search_as_dc_keeps_the_dc_result(client, monkeypatch):
+    """The filter must not be so eager that it empties a correct search."""
+    from getmehome.api import main
+    from getmehome.api.schemas import GeocodeResult
+
+    monkeypatch.setattr(
+        main,
+        "_nominatim",
+        lambda q, limit, city: [
+            GeocodeResult(
+                name="Union Station", address="Washington, DC",
+                lat=38.8977, lon=-77.0064,
+            ),
+        ],
+    )
+    body = main.geocode(q="union station", limit=12, lat=None, lon=None, city="dc")
+    assert "Union Station" in [r.name for r in body.results]
+
+
+def test_a_city_without_transit_says_how_to_get_it(client):
+    """The 503 in the server log needs to say what is missing, not just that
+    something is."""
+    response = client.get(
+        "/transit/stops",
+        params={
+            "minLat": 38.89, "minLon": -77.04,
+            "maxLat": 38.91, "maxLon": -77.02,
+        },
+    )
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "make gtfs CITY=dc" in detail
+    assert "make graph CITY=dc" in detail
+    # And it names the feeds, so a partial download is diagnosable.
+    assert "wmata-rail" in detail

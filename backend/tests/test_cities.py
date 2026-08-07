@@ -379,3 +379,141 @@ def test_geometry_helpers_agree_with_great_circle_distance():
         measured = math.hypot(float(xb - xa), float(yb - ya))
         truth = haversine_m(lat, lon, lat + dlat, lon + dlon)
         assert measured == pytest.approx(truth, rel=2e-3)
+
+
+# ---------------------------------------------------------------------------
+# Premises: keeping street crime and dropping what happens indoors
+# ---------------------------------------------------------------------------
+
+
+def test_dwellings_are_recognised_however_they_are_phrased():
+    from getmehome.cities import premises_class
+
+    for text in (
+        "RESIDENCE - APT. HOUSE",
+        "RESIDENCE-HOUSE",
+        "RESIDENCE - PUBLIC HOUSING",
+        "PUBLIC HOUSING",
+        "DWELLING",
+    ):
+        assert premises_class(text) == "private", text
+
+
+def test_public_housing_is_not_read_as_public():
+    """It contains the word "PUBLIC" and is a dwelling. Order matters."""
+    from getmehome.cities import premises_class
+
+    assert premises_class("PUBLIC HOUSING") == "private"
+
+
+def test_the_street_and_places_on_it_are_outdoors():
+    from getmehome.cities import premises_class
+
+    for text in (
+        "STREET",
+        "PARK/PLAYGROUND",
+        "PARKING LOT/GARAGE (PUBLIC)",
+        "HIGHWAY/PARKWAY",
+        "OPEN AREAS (OPEN LOTS, ETC)",
+    ):
+        assert premises_class(text) == "outdoor", text
+
+
+def test_indoor_but_public_places_are_their_own_band():
+    """A robbery outside a bar at 1am is pedestrian-relevant; a domestic
+    assault in a flat is not. They should not share a weight."""
+    from getmehome.cities import premises_class
+
+    for text in ("BAR/NIGHT CLUB", "TRANSIT - NYC SUBWAY", "RESTAURANT/DINER"):
+        assert premises_class(text) == "semi_public", text
+
+
+def test_a_missing_premises_is_unknown_rather_than_outdoors():
+    """Assuming outdoors would let a feed with no premises column quietly
+    behave as though everything happened on the street."""
+    from getmehome.cities import premises_class
+
+    assert premises_class("") == "unknown"
+    assert premises_class(None) == "unknown"
+
+
+def test_a_feed_without_premises_is_completely_unaffected():
+    """Washington's feed has no premises column, so nothing may change."""
+    assert DC.crime.premises.is_identity
+    for text in ("STREET", "RESIDENCE-HOUSE", ""):
+        assert DC.crime.premises.weight_for(text) == 1.0, text
+
+
+def test_new_york_excludes_what_happens_inside_homes():
+    weights = NYC.crime.premises
+    assert not weights.is_identity
+    assert weights.weight_for("STREET") == 1.0
+    assert weights.weight_for("RESIDENCE - APT. HOUSE") == 0.0
+    assert 0 < weights.weight_for("BAR/NIGHT CLUB") < 1.0
+    # A feed row with no premises still counts; dropping it would silently
+    # discard real incidents whenever the column is sparse.
+    assert weights.weight_for("") == 1.0
+
+
+def test_an_indoor_incident_contributes_nothing_to_the_weighting():
+    from datetime import UTC, datetime
+
+    from getmehome.safety.crime_model import CrimeIncident, incident_weight
+
+    now = datetime.now(UTC)
+
+    def weigh(premises: str) -> float:
+        incident = CrimeIncident(
+            lat=40.75, lon=-73.98, offense="FELONY ASSAULT", method="",
+            shift="EVENING", reported_at=now, premises=premises,
+        )
+        return incident_weight(
+            incident, now, NYC.crime_vocabulary,
+            decay=False, premises=NYC.crime.premises,
+        )
+
+    assert weigh("STREET") > 0
+    assert weigh("RESIDENCE - APT. HOUSE") == 0.0
+    assert 0 < weigh("BAR/NIGHT CLUB") < weigh("STREET")
+    # No policy passed means no filtering — the DC path.
+    assert incident_weight(
+        CrimeIncident(
+            lat=40.75, lon=-73.98, offense="FELONY ASSAULT", method="",
+            shift="EVENING", reported_at=now, premises="RESIDENCE-HOUSE",
+        ),
+        now, NYC.crime_vocabulary, decay=False,
+    ) > 0
+
+
+# ---------------------------------------------------------------------------
+# Sexual offences: grouped, and weighted sensibly
+# ---------------------------------------------------------------------------
+
+
+def test_rape_and_the_broader_bucket_share_one_label():
+    """NYPD splits them; a person reading a map does not want that split."""
+    display = NYC.crime_vocabulary.display_name
+    assert display["RAPE"] == display["SEX CRIMES"] == "Sexual offense"
+
+
+def test_both_stay_in_the_sexual_category():
+    category = NYC.crime_vocabulary.category
+    assert category["RAPE"] == category["SEX CRIMES"] == "sexual"
+
+
+def test_the_broad_bucket_is_not_weighted_like_rape():
+    """NYPD's "SEX CRIMES" covers forcible touching through to far graver
+    offences, and is several times the size of the rape category. Weighting
+    it as equivalent made a handful of reports dominate every cell."""
+    vocab = NYC.crime_vocabulary
+    assert vocab.severity["SEX CRIMES"] < vocab.severity["RAPE"]
+    # Still serious, though — this is a reweighting, not a dismissal.
+    assert vocab.severity["SEX CRIMES"] >= 0.5
+
+
+def test_nypd_premises_column_is_named_correctly():
+    """The first pass looked for `premises_typ_desc`, which does not exist —
+    so every incident came back with no premises and nothing was filtered."""
+    from getmehome.ingest.socrata import _NYPD_PREMISES
+
+    assert "prem_typ_desc" in _NYPD_PREMISES

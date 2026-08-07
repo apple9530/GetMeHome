@@ -47,7 +47,11 @@ _NYPD_DATE = ("cmplnt_fr_dt", "cmplnt_dt", "rpt_dt")
 _NYPD_TIME = ("cmplnt_fr_tm", "cmplnt_tm")
 _NYPD_LAT = ("latitude", "lat")
 _NYPD_LON = ("longitude", "lon", "lng")
-_NYPD_WEAPON = ("pd_desc", "weapon_desc", "premises_typ_desc")
+_NYPD_WEAPON = ("pd_desc", "weapon_desc")
+# Where it happened. NYPD's column is `prem_typ_desc` — the first pass had it
+# as `premises_typ_desc`, which does not exist, so every incident came back
+# with no premises and none of the residential filtering could apply.
+_NYPD_PREMISES = ("prem_typ_desc", "premises_desc", "premise_type")
 _NYPD_ID = ("cmplnt_num", "complaint_number")
 
 # --- NYC DOT street light columns ------------------------------------------
@@ -256,6 +260,7 @@ def fetch_socrata_crime(
                     method=_weapon_from(row),
                     shift=shift_for_hour(when.hour),
                     reported_at=when,
+                    premises=str(pick(row, _NYPD_PREMISES, "")).strip().upper(),
                 )
             )
 

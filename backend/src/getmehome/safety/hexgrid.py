@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 
-from ..cities import DC, CrimeVocabulary
+from ..cities import DC, CrimeVocabulary, PremisesWeights
 from ..config import CRIME, CrimeConfig
 from ..geo import Projection
 from .crime_model import NIGHT_SHIFTS, incident_weight
@@ -248,6 +248,7 @@ class CrimeIndex:
         projection: Projection | None = None,
         vocabulary: CrimeVocabulary | None = None,
         city_slug: str = DC.slug,
+        premises: PremisesWeights | None = None,
     ) -> CrimeIndex:
         if not incidents:
             empty = np.zeros(0)
@@ -274,7 +275,9 @@ class CrimeIndex:
             # filter, so an incident either counts or it does not.
             weight=np.array(
                 [
-                    incident_weight(i, now, vocabulary, cfg, decay=False)
+                    incident_weight(
+                        i, now, vocabulary, cfg, decay=False, premises=premises
+                    )
                     for i in incidents
                 ],
                 dtype=np.float32,
@@ -379,21 +382,47 @@ class CrimeIndex:
             # ordered by what actually drives the cell's risk. A cell can be
             # forty car break-ins and one robbery, and ordering by raw count
             # would bury the fact that the robbery is most of the risk.
-            contribution = {
-                oid: float(member_weights[member_offenses == oid].sum())
-                for oid in counts
-            }
-            total_weight = sum(contribution.values()) or 1.0
+            #
+            # Grouped by *display name*, not by raw code. Police feeds split
+            # categories in ways that are legally meaningful and useless in a
+            # two-line summary — NYPD separates rape from its broader
+            # sexual-offence bucket, and showing both as adjacent rows reading
+            # "Sexual offense" would look like a bug. Any two codes the
+            # vocabulary labels the same are one row here.
+            grouped: dict[str, dict] = {}
+            for oid, count in counts.items():
+                label = readable_offense(self.offenses[oid], self.vocabulary)
+                entry = grouped.setdefault(
+                    label,
+                    {
+                        "offense": self.offenses[oid],
+                        "count": 0,
+                        "weight": 0.0,
+                        "category": self.categories[oid],
+                    },
+                )
+                entry["count"] += int(count)
+                entry["weight"] += float(
+                    member_weights[member_offenses == oid].sum()
+                )
+                # Where merged codes disagree on category, the more serious
+                # one wins — a group containing anything violent is violent.
+                if self.categories[oid] in self.cfg.serious_categories:
+                    entry["category"] = self.categories[oid]
+
+            total_weight = sum(e["weight"] for e in grouped.values()) or 1.0
 
             breakdown = [
                 OffenseBreakdown(
-                    offense=self.offenses[oid],
-                    display=readable_offense(self.offenses[oid], self.vocabulary),
-                    count=int(counts[oid]),
-                    category=self.categories[oid],
-                    share=round(contribution[oid] / total_weight, 4),
+                    offense=entry["offense"],
+                    display=label,
+                    count=entry["count"],
+                    category=entry["category"],
+                    share=round(entry["weight"] / total_weight, 4),
                 )
-                for oid in sorted(counts, key=lambda o: -contribution[o])
+                for label, entry in sorted(
+                    grouped.items(), key=lambda kv: -kv[1]["weight"]
+                )
             ][:max_offense_kinds]
 
             serious = sum(

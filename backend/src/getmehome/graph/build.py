@@ -176,6 +176,7 @@ def build(
     log.info("%d crime incidents", len(incidents))
 
     _warn_on_unknown_offences(city, incidents)
+    _report_premises(city, incidents)
 
     # --- extra cameras -------------------------------------------------
     cameras = list(osm_cameras)
@@ -231,6 +232,7 @@ def build(
         cameras,
         progress=log.info,
         vocabulary=city.crime_vocabulary,
+        premises=city.crime.premises,
     )
 
     graph.meta["lit_median"] = round(float(np.median(graph.seg_lit)), 3)
@@ -266,6 +268,7 @@ def build(
         projection=projection,
         vocabulary=city.crime_vocabulary,
         city_slug=city.slug,
+        premises=city.crime.premises,
     ).save(points_file)
     log.info("wrote %s (%.1f MB)", points_file, points_file.stat().st_size / 1e6)
 
@@ -318,6 +321,47 @@ def _warn_on_unknown_offences(city: City, incidents: list) -> None:
             "More than half the incidents are unweighted. That usually means "
             "the vocabulary belongs to another city, or the feed's offence "
             "column has been renamed — check cities.%s.", city.slug.upper(),
+        )
+
+
+def _report_premises(city: City, incidents: list) -> None:
+    """Say how much the premises filter removed, and check it did anything.
+
+    A feed that declares a premises policy but returns an empty premises for
+    every row is the exact signature of a wrong column name — and it fails
+    silently, because "no premises" is treated as unknown and counts in full.
+    """
+    policy = city.crime.premises
+    if policy.is_identity:
+        return
+
+    from ..cities import premises_class  # noqa: PLC0415
+
+    counts: dict[str, int] = {}
+    for incident in incidents:
+        group = premises_class(incident.premises)
+        counts[group] = counts.get(group, 0) + 1
+
+    total = max(1, len(incidents))
+    log.info(
+        "premises: %s",
+        ", ".join(
+            f"{k} {v} ({100 * v / total:.0f}%)" for k, v in sorted(counts.items())
+        ),
+    )
+    if counts.get("private"):
+        log.info(
+            "excluded %d incidents inside dwellings (%.0f%%) — they say nothing "
+            "about the risk of walking past the building",
+            counts["private"], 100 * counts["private"] / total,
+        )
+
+    if counts.get("unknown", 0) / total > 0.5:
+        log.error(
+            "%s declares a premises policy but %.0f%% of incidents have no "
+            "premises. The column is probably named something else — check "
+            "_NYPD_PREMISES in ingest/socrata.py. Nothing is being filtered.",
+            city.slug, 100 * counts.get("unknown", 0) / total,
         )
 
 

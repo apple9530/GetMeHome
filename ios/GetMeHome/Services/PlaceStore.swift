@@ -26,10 +26,35 @@ final class PlaceStore {
     private(set) var saved: [SavedPlace] = []
 
     private let defaults: UserDefaults
-    private let key = "savedPlaces"
 
-    init(defaults: UserDefaults = .standard) {
+    /// Which city's places are loaded.
+    ///
+    /// History and starred places are per city. They used to share one list,
+    /// which meant tapping a search field in New York offered a screen of
+    /// Washington addresses — every one of them unroutable there, and the
+    /// first thing anyone would see.
+    private(set) var city: String?
+
+    private var key: String {
+        city.map { "savedPlaces.\($0)" } ?? "savedPlaces"
+    }
+
+    /// The pre-city key, migrated once into whichever city owned it.
+    private static let legacyKey = "savedPlaces"
+
+    init(defaults: UserDefaults = .standard, city: String? = nil) {
         self.defaults = defaults
+        self.city = city
+        load()
+    }
+
+    /// Point the store at a different city's list.
+    ///
+    /// The previous city's entries stay on disk under their own key, so
+    /// switching back and forth does not lose anything.
+    func switchTo(city newCity: String?) {
+        guard newCity != city else { return }
+        city = newCity
         load()
     }
 
@@ -120,9 +145,20 @@ final class PlaceStore {
     }
 
     private func load() {
-        guard let data = defaults.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([SavedPlace].self, from: data)
-        else { return }
-        saved = decoded
+        saved = decode(forKey: key) ?? []
+
+        // One-time migration. Everything saved before cities existed was
+        // Washington, so it moves under DC's key rather than being orphaned —
+        // losing someone's starred places to a refactor is not acceptable.
+        if saved.isEmpty, city == "dc", let legacy = decode(forKey: Self.legacyKey) {
+            saved = legacy
+            persist()
+            defaults.removeObject(forKey: Self.legacyKey)
+        }
+    }
+
+    private func decode(forKey key: String) -> [SavedPlace]? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode([SavedPlace].self, from: data)
     }
 }

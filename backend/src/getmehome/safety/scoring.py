@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from ..cities import CrimeVocabulary
+from ..cities import CrimeVocabulary, PremisesWeights
 from ..config import CRIME
 from ..graph.model import WalkGraph
 from .cameras import AlprCamera
@@ -24,6 +24,7 @@ def apply_scores(
     cameras: list[AlprCamera],
     progress: Callable[[str], None] | None = None,
     vocabulary: CrimeVocabulary | None = None,
+    premises: PremisesWeights | None = None,
 ) -> dict[int, CrimeSurface]:
     """Populate a graph's lighting, crime and camera attributes in place.
 
@@ -54,6 +55,7 @@ def apply_scores(
             window_days=window,
             projection=projection,
             vocabulary=vocabulary,
+            premises=premises,
         )
         if progress:
             progress(f"{window}d window: {surface.n_incidents} incidents")

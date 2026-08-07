@@ -90,6 +90,141 @@ class CrimeVocabulary:
         return problems
 
 
+# --------------------------------------------------------------------------
+# Premises
+#
+# NYPD publishes where an incident happened — `prem_typ_desc` — and it turns
+# out to matter a great deal. A large share of New York's reported sexual
+# offences and assaults occur inside dwellings, and a domestic assault in an
+# eleventh-floor apartment says close to nothing about the risk of walking past
+# the building. Counting it does two wrong things at once: it inflates the risk
+# of residential streets, and it maps the location of housing rather than the
+# location of street crime.
+#
+# So incidents are weighted by where they happened, in three bands.
+# --------------------------------------------------------------------------
+
+#: Substrings identifying a private dwelling. Matched case-insensitively
+#: against the feed's premises string.
+PRIVATE_PREMISES: tuple[str, ...] = (
+    "RESIDENCE",
+    "DWELLING",
+    "APT",
+    "APARTMENT",
+    "PRIVATE HOUSE",
+    "PUBLIC HOUSING",
+)
+
+#: Indoor but open to the public. A robbery outside a bar at 1am is squarely
+#: pedestrian-relevant even though the report says the premises was the bar,
+#: and transit interiors are somewhere people walk through at night — so these
+#: are discounted rather than dropped.
+SEMI_PUBLIC_PREMISES: tuple[str, ...] = (
+    "BAR/NIGHT CLUB",
+    "RESTAURANT",
+    "DINER",
+    "STORE",
+    "SUPERMARKET",
+    "DRUG STORE",
+    "GAS STATION",
+    "HOTEL",
+    "TRANSIT",
+    "SUBWAY",
+    "STATION",
+    "BUS",
+    "TERMINAL",
+    "HOSPITAL",
+    "DOCTOR",
+    "BANK",
+    "CHECK CASHING",
+    "COMMERCIAL",
+    "STORE UNCLASSIFIED",
+    "SHOE",
+    "CLOTHING",
+    "VARIETY STORE",
+    "FAST FOOD",
+    "GROCERY",
+    "CHAIN STORE",
+    "DEPARTMENT STORE",
+    "BOOK/CARD",
+    "JEWELRY",
+    "LIQUOR STORE",
+    "TELECOMM",
+    "SMALL MERCHANT",
+    "CANDY STORE",
+    "BEAUTY",
+    "LOAN",
+    "SOCIAL CLUB",
+    "GYM",
+    "STORAGE",
+    "FACTORY",
+    "SCHOOL",
+    "CHURCH",
+    "SYNAGOGUE",
+    "MOSQUE",
+    "OTHER HOUSE OF WORSHIP",
+)
+
+
+def premises_class(premises: str) -> str:
+    """One of "outdoor", "semi_public", "private" or "unknown".
+
+    Order matters: "PUBLIC HOUSING" must not be read as public, and
+    "RESIDENCE - APT. HOUSE" is a dwelling despite containing "HOUSE". Private
+    is therefore tested first.
+    """
+    text = (premises or "").strip().upper()
+    if not text:
+        return "unknown"
+    if any(needle in text for needle in PRIVATE_PREMISES):
+        return "private"
+    if any(needle in text for needle in SEMI_PUBLIC_PREMISES):
+        return "semi_public"
+    # "STREET", "PARK", "PARKING LOT/GARAGE", "HIGHWAY/PARKWAY", "OPEN AREAS
+    # UNCLASSIFIED" — everywhere a pedestrian actually is.
+    return "outdoor"
+
+
+@dataclass(frozen=True)
+class PremisesWeights:
+    """How much an incident counts, given where it happened.
+
+    Zero for private dwellings is a deliberate exclusion rather than a very
+    small number: the question this model answers is "what is the risk of
+    walking down this street", and a crime committed inside someone's home is
+    not evidence about that. Including it at any weight makes the surface
+    partly a map of where people live.
+
+    ``unknown`` sits between the two. A feed that does not publish premises at
+    all — Washington's does not — passes 1.0 here and is unaffected, which is
+    why the default is a policy that weights everything equally.
+    """
+
+    outdoor: float = 1.0
+    semi_public: float = 0.55
+    private: float = 0.0
+    unknown: float = 1.0
+
+    def weight_for(self, premises: str) -> float:
+        return getattr(self, premises_class(premises))
+
+    @property
+    def is_identity(self) -> bool:
+        """True when this policy changes nothing, i.e. the feed has no premises."""
+        return (
+            self.outdoor == self.semi_public == self.private == self.unknown == 1.0
+        )
+
+
+#: A feed with no premises column. Everything counts, as it did before.
+NO_PREMISES = PremisesWeights(
+    outdoor=1.0, semi_public=1.0, private=1.0, unknown=1.0
+)
+
+#: Street-focused, for a feed that does publish premises.
+STREET_ONLY = PremisesWeights()
+
+
 @dataclass(frozen=True)
 class CrimeSource:
     """Where a city's incident reports come from."""
@@ -104,6 +239,9 @@ class CrimeSource:
     # Whether the feed carries an explicit day/evening/night shift. Where it
     # does not, the hour of the timestamp is used instead.
     has_shift_field: bool = False
+    # How to weight an incident by where it happened. Feeds that do not
+    # publish premises get NO_PREMISES and are unaffected.
+    premises: PremisesWeights = field(default_factory=lambda: NO_PREMISES)
 
 
 @dataclass(frozen=True)
@@ -300,7 +438,15 @@ NYC_CRIME = CrimeVocabulary(
     severity={
         "MURDER & NON-NEGL. MANSLAUGHTER": 1.00,
         "RAPE": 1.00,
-        "SEX CRIMES": 0.95,
+        # NYPD's "SEX CRIMES" is a much broader bucket than its name suggests
+        # — forcible touching and third-degree sexual abuse sit in it
+        # alongside far graver offences, and it is several times the size of
+        # the rape category. Weighting it near homicide, as the first pass
+        # did, made a handful of reports dominate every cell they appeared in
+        # and produced sexual-offence shares that did not survive a sense
+        # check against DC. It stays serious and stays in the sexual category;
+        # it is no longer treated as equivalent to rape.
+        "SEX CRIMES": 0.70,
         "FELONY ASSAULT": 0.90,
         "ROBBERY": 0.85,
         "KIDNAPPING & RELATED OFFENSES": 0.85,
@@ -331,7 +477,11 @@ NYC_CRIME = CrimeVocabulary(
     },
     display_name={
         "MURDER & NON-NEGL. MANSLAUGHTER": "Homicide",
-        "RAPE": "Rape",
+        # Deliberately the same label for both. NYPD splits rape from its
+        # broader sexual-offence bucket; a person reading a map does not want
+        # that distinction drawn for them in a two-line summary, and the
+        # breakdown groups rows by display name so these merge into one.
+        "RAPE": "Sexual offense",
         "SEX CRIMES": "Sexual offense",
         "FELONY ASSAULT": "Felony assault",
         "ROBBERY": "Robbery",
@@ -392,6 +542,10 @@ NYC = City(
         datasets=("5uac-w243", "qgea-i56i"),
         # NYPD stamps a time, not a shift.
         has_shift_field=False,
+        # NYPD publishes `prem_typ_desc`, so incidents inside dwellings are
+        # excluded. See PremisesWeights for why that is an exclusion rather
+        # than a discount.
+        premises=STREET_ONLY,
     ),
     lights=LightSource(
         kind="socrata",

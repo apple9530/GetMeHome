@@ -240,6 +240,9 @@ def health(city: str | None = Query(None)) -> dict:
         "streetlights": state.graph.meta.get("n_lights", 0),
         "crimeIncidents": state.crime.count if state.crime else 0,
         "searchablePlaces": len(state.places) if state.places else 0,
+        "transitStops": (
+            state.transit.network.n_stops if state.transit else 0
+        ),
         "transit": state.has_transit,
         "cameras": len(state.cameras),
     }
@@ -550,14 +553,25 @@ def geocode(
     seen: set[tuple[int, int]] = set()
 
     def add(result: GeocodeResult) -> None:
+        # Nothing outside the selected city, whatever its source. A result the
+        # user cannot route to is not a search result, it is a dead end — and
+        # "Union Station" matching Washington's while New York is selected is
+        # a genuinely confusing answer rather than a merely unhelpful one.
+        if not selected.bbox.contains(result.lat, result.lon):
+            return
         key = (int(result.lat * 20000), int(result.lon * 20000))
         if key in seen:
             return
         seen.add(key)
         results.append(result)
 
+    # Without a device location, bias to the city's centre. Otherwise an
+    # ambiguous name is resolved by text alone and a match on the far side of
+    # the city can outrank the one round the corner.
+    bias = near or selected.center
+
     if state is not None and state.places is not None:
-        for hit in state.places.search(q, limit=limit, near=near):
+        for hit in state.places.search(q, limit=limit, near=bias):
             add(
                 GeocodeResult(
                     name=hit.place.name,
@@ -743,9 +757,17 @@ def _clock(seconds: int) -> str:
 def _require_transit(slug: str | None = None):
     state = _require_state(slug)
     if state.transit is None:
+        city = state.city
+        feeds = ", ".join(f.name for f in city.transit_feeds) or "none configured"
         raise HTTPException(
             status_code=503,
-            detail="No transit timetable is loaded. Run `make gtfs` and rebuild.",
+            detail=(
+                f"No transit timetable for {city.name}. Download its feeds "
+                f"and rebuild:\n"
+                f"    make gtfs CITY={city.slug}\n"
+                f"    make graph CITY={city.slug}\n"
+                f"Feeds for this city: {feeds}."
+            ),
         )
     return state
 

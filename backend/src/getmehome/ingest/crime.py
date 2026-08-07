@@ -203,6 +203,7 @@ def save_crime(incidents: list[CrimeIncident], path: Path) -> None:
                     "m": i.method,
                     "s": i.shift,
                     "t": i.reported_at.isoformat(),
+                    "p": i.premises,
                 }
                 for i in incidents
             ]
@@ -219,6 +220,7 @@ def load_crime(path: Path) -> list[CrimeIncident]:
             method=r["m"],
             shift=r["s"],
             reported_at=datetime.fromisoformat(r["t"]),
+            premises=r.get("p", ""),
         )
         for r in json.loads(path.read_text())
     ]

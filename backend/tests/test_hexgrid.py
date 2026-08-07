@@ -388,3 +388,76 @@ def test_breakdown_carries_a_display_name():
     entry = cells[0].by_offense[0]
     assert entry.offense == "THEFT F/AUTO"
     assert entry.display == "Theft from a vehicle"
+
+
+# ---------------------------------------------------------------------------
+# Grouping the breakdown by what it is called
+# ---------------------------------------------------------------------------
+
+
+def test_two_codes_with_one_label_appear_as_one_row():
+    """NYPD splits rape from its broader sexual-offence bucket. Both are
+    labelled "Sexual offense", and two adjacent rows reading the same thing
+    would look like a bug rather than like a legal distinction.
+    """
+    from getmehome.cities import NYC
+    from getmehome.safety.hexgrid import CrimeIndex
+
+    def nypd(offense: str, n: int) -> list[CrimeIncident]:
+        return [
+            CrimeIncident(
+                lat=CENTER_LAT + (i % 3) * 0.00005,
+                lon=CENTER_LON + (i % 3) * 0.00005,
+                offense=offense,
+                method="",
+                shift="EVENING",
+                reported_at=NOW - timedelta(days=i),
+                premises="STREET",
+            )
+            for i in range(n)
+        ]
+
+    index = CrimeIndex.from_incidents(
+        nypd("RAPE", 2) + nypd("SEX CRIMES", 3) + nypd("ROBBERY", 4),
+        now=NOW,
+        projection=DC.projection,
+        vocabulary=NYC.crime_vocabulary,
+        city_slug="nyc",
+    )
+    cells, _ = index.cells(
+        CENTER_LAT - 0.01, CENTER_LON - 0.01, CENTER_LAT + 0.01, CENTER_LON + 0.01
+    )
+    assert cells
+
+    labels = [entry.display for entry in cells[0].by_offense]
+    assert labels.count("Sexual offense") == 1, labels
+
+    sexual = next(e for e in cells[0].by_offense if e.display == "Sexual offense")
+    # Both codes' counts land in the one row.
+    assert sexual.count == 5
+    assert sexual.category == "sexual"
+
+
+def test_grouped_shares_still_sum_to_one():
+    from getmehome.cities import NYC
+    from getmehome.safety.hexgrid import CrimeIndex
+
+    incidents = [
+        CrimeIncident(
+            lat=CENTER_LAT, lon=CENTER_LON, offense=offense, method="",
+            shift="EVENING", reported_at=NOW, premises="STREET",
+        )
+        for offense in ("RAPE", "SEX CRIMES", "ROBBERY", "PETIT LARCENY")
+    ]
+    index = CrimeIndex.from_incidents(
+        incidents,
+        now=NOW,
+        projection=DC.projection,
+        vocabulary=NYC.crime_vocabulary,
+        city_slug="nyc",
+    )
+    cells, _ = index.cells(
+        CENTER_LAT - 0.01, CENTER_LON - 0.01, CENTER_LAT + 0.01, CENTER_LON + 0.01
+    )
+    total = sum(e.share for e in cells[0].by_offense)
+    assert total == pytest.approx(1.0, abs=0.01)

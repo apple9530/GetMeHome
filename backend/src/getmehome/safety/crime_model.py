@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 import numpy as np
 from scipy import ndimage
 
-from ..cities import DC, CrimeVocabulary
+from ..cities import DC, CrimeVocabulary, PremisesWeights
 from ..config import CRIME, CrimeConfig
 from ..geo import Projection, sample_polyline
 
@@ -50,6 +50,10 @@ class CrimeIncident:
     method: str
     shift: str
     reported_at: datetime
+    # Where it happened, in the feed's own words — "STREET", "RESIDENCE -
+    # APT. HOUSE", "BAR/NIGHT CLUB". Empty for feeds that do not publish it,
+    # which is treated as unknown rather than as outdoors.
+    premises: str = ""
 
 
 def incident_weight(
@@ -58,8 +62,9 @@ def incident_weight(
     vocabulary: CrimeVocabulary | None = None,
     cfg: CrimeConfig = CRIME,
     decay: bool = True,
+    premises: PremisesWeights | None = None,
 ) -> float:
-    """Combined severity x relevance x weapon weight, optionally decayed.
+    """Combined severity x relevance x weapon x premises weight.
 
     ``decay=False`` is what window-scoped scoring uses: inside a window every
     incident counts equally, because the window already expresses how far back
@@ -77,6 +82,12 @@ def incident_weight(
     method = vocab.method_multiplier.get((incident.method or "").strip().upper(), 1.0)
 
     weight = severity * relevance * method
+    if premises is not None:
+        # Where it happened. A domestic assault inside an apartment says
+        # nothing about walking past the building, and counting it maps
+        # housing rather than street risk.
+        weight *= premises.weight_for(incident.premises)
+
     if not decay:
         return weight
 
@@ -116,9 +127,11 @@ class CrimeSurface:
         window_days: int | None = None,
         projection: Projection | None = None,
         vocabulary: CrimeVocabulary | None = None,
+        premises: PremisesWeights | None = None,
     ) -> None:
         self.cfg = cfg
         self.vocabulary = vocabulary or DC.crime_vocabulary
+        self.premises = premises
         # The raster's frame. Sampling it later has to use the same one, so it
         # is held on the surface rather than passed per call.
         self.projection = projection or Projection(0.0, 0.0)
@@ -148,7 +161,10 @@ class CrimeSurface:
 
         weights = np.array(
             [
-                incident_weight(i, self.now, self.vocabulary, cfg, decay=decay)
+                incident_weight(
+                    i, self.now, self.vocabulary, cfg,
+                    decay=decay, premises=self.premises,
+                )
                 for i in incidents
             ],
             dtype=np.float64,

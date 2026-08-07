@@ -14,7 +14,7 @@ struct GetMeHomeApp: App {
         let settings = AppSettings()
         let location = LocationService()
         let client = RoutingClient(baseURL: settings.serverURL)
-        let places = PlaceStore()
+        let places = PlaceStore(city: settings.citySlug)
 
         _settings = State(initialValue: settings)
         _location = State(initialValue: location)
@@ -44,6 +44,9 @@ struct GetMeHomeApp: App {
                 }
                 .onChange(of: settings.citySlug) { _, slug in
                     Task { await client.updateCity(slug) }
+                    // Recents and starred places are per city: a Washington
+                    // address is not a suggestion worth offering in New York.
+                    places.switchTo(city: slug)
                 }
                 .onChange(of: settings.serverURLString) { _, newValue in
                     guard let url = URL(string: newValue) else { return }
